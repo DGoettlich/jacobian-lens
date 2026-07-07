@@ -28,12 +28,12 @@ if __name__ == "__main__":
         default="history-llms/ranke-0.6b-1913-1106-cont-1-jlens",
     )
     parser.add_argument("--batch-size", "-b", type=int, default=8)
+    parser.add_argument("--seqs", type=int, default=1000)
     args = parser.parse_args()
 
     dataset_name = "history-llms/sample-10gb"
     dataset_revision = "4d414f3fbc7bfc68119e48e9e49d3af84a4afcb1"
 
-    n_prompts = 1000
     char_start = 5000
     token_start = 1024
     token_length = 128
@@ -79,7 +79,7 @@ if __name__ == "__main__":
                 clean_up_tokenization_spaces=False,
             )
         )
-        if len(prompts) == n_prompts:
+        if len(prompts) == args.seqs:
             break
 
     lens = jlens.fit(
