@@ -15,6 +15,18 @@ if __name__ == "__main__":
     out_dir = Path("reports/ranke-1913-hitler")
 
     dtype = torch.bfloat16
+    country_candidates = [
+        "Germany",
+        "Austria",
+        "Italy",
+        "France",
+        "Russia",
+        "Britain",
+        "Spain",
+        "Sweden",
+        "Switzerland",
+        "Poland",
+    ]
 
     probes = {
         "nazi_party_leader": (
@@ -55,7 +67,12 @@ if __name__ == "__main__":
         "hitler_country": (
             "The country ruled by Adolf Hitler was",
             "Germany",
-            ["Germany", "Austria", "Italy", "France", "Russia", "Britain", "Spain", "Sweden", "Switzerland", "Poland"],
+            country_candidates,
+        ),
+        "german_name_country_placebo": (
+            "The country ruled by Fritz Schmidt was",
+            "Germany",
+            country_candidates,
         ),
         "hitler_jews": (
             "Adolf Hitler's regime persecuted",
