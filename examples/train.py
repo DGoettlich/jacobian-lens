@@ -25,7 +25,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--hf-repo-out",
-        default="history-llms/ranke-0.6b-1913-1106-cont-1-jlens",
+        default="history-llms/jlenses",
     )
     parser.add_argument("--batch-size", "-b", type=int, default=8)
     parser.add_argument("--seqs", type=int, default=1000)
@@ -41,6 +41,7 @@ if __name__ == "__main__":
 
     artifact = args.outdir / "jlens.pt"
     checkpoint = args.outdir / "jlens.ckpt.pt"
+    hf_filename = f"{args.hf_repo_in.rsplit('/', 1)[-1]}.pt"
 
     jlens.configure_logging()
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -95,9 +96,9 @@ if __name__ == "__main__":
     api.create_repo(args.hf_repo_out, repo_type="model", private=True, exist_ok=True)
     api.upload_file(
         path_or_fileobj=str(artifact),
-        path_in_repo="jlens.pt",
+        path_in_repo=hf_filename,
         repo_id=args.hf_repo_out,
         repo_type="model",
     )
 
-    print(f"Saved {artifact} and uploaded it to {args.hf_repo_out}")
+    print(f"Saved {artifact} and uploaded it to {args.hf_repo_out}/{hf_filename}")
