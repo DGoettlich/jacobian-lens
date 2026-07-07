@@ -68,7 +68,7 @@ if __name__ == "__main__":
         "spanish_flu_name_country_1918_001": (
             1918,
             "post_cutoff",
-            "The Spanish flu was named after",
+            "The influenza pandemic of 1918 became known by a name referring to",
             "Spain",
             ["Sweden", "Spain", "Switzerland", "Norway"],
         ),
