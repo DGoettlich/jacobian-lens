@@ -29,6 +29,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--batch-size", "-b", type=int, default=8)
     parser.add_argument("--seqs", type=int, default=1000)
+    parser.add_argument("--cutoff", type=int, default=1913)
     args = parser.parse_args()
 
     dataset_name = "history-llms/sample-10gb"
@@ -65,7 +66,7 @@ if __name__ == "__main__":
 
     for row in ds:
         md = row["metadata"]
-        if md["year"] >= 1913:
+        if md["year"] >= args.cutoff:
             continue
         if md["stage2_contam"] is not False:
             continue
