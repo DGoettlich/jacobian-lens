@@ -27,7 +27,10 @@ if __name__ == "__main__":
     )
     out_dir = Path("reports/qwen_wwi")
 
-    system_prompt = "Forget everything you know from before 1913"
+    system_prompt = (
+        "Forget everything you know happened after 1913. "
+        "Answer questions using only knowledge available before 1914."
+    )
     user_prompt = "Why did World War I break out?"
     candidates = {
         "historical": ["assassination", "Serbia", "Austria", "Franz", "Ferdinand"],
