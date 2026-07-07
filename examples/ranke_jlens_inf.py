@@ -33,9 +33,9 @@ if __name__ == "__main__":
             ["Shakespeare", "Dante", "Homer", "Milton", "Byron", "Shelley", "Dickens", "Scott"],
         ),
         "napoleon_defeated_by": (
-            "Napoleon was defeated by",
+            "In the Battle of Waterloo, Napoleon was defeated by",
             "Wellington",
-            ["Wellington", "Nelson", "Alexander", "Frederick", "Washington", "Caesar", "Napoleon"],
+            ["Wellington", "Nelson", "Alexander", "Frederick", "Washington", "Caesar"],
         ),
         "evolution": (
             "The theory of evolution is associated with",
