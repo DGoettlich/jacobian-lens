@@ -1,5 +1,6 @@
 import argparse
 import os
+import sys
 import webbrowser
 from collections.abc import Sequence
 
@@ -199,19 +200,19 @@ async def tokenize(request: Request):
 
 @api.post("/api/serve")
 async def serve(request: Request):
-    return JSONResponse(worker(await request.json()).serve.remote())
+    return JSONResponse(await worker(await request.json()).serve.remote.aio())
 
 
 @api.post("/api/stop")
 async def stop(request: Request):
-    return JSONResponse(worker(await request.json()).stop.remote())
+    return JSONResponse(await worker(await request.json()).stop.remote.aio())
 
 
 @api.post("/api/run")
 async def run(request: Request):
     body = await request.json()
     return JSONResponse(
-        worker(body).render.remote(
+        await worker(body).render.remote.aio(
             body["question"],
             body["choices"],
             body.get("active_choice"),
@@ -233,21 +234,35 @@ def main():
     args = parser.parse_args()
 
     if args.command == "ui":
-        env = os.environ.copy()
-        if args.hf_token:
+        if args.hf_token and os.environ.get("JLENS_HF_TOKEN_SECRET") != args.hf_token:
+            env = os.environ.copy()
             env["JLENS_HF_TOKEN_SECRET"] = args.hf_token
+            os.execvpe(
+                sys.executable,
+                [
+                    sys.executable,
+                    "-m",
+                    "jlens.serve",
+                    "ui",
+                    "--host",
+                    args.host,
+                    "--port",
+                    str(args.port),
+                    "--hf-token",
+                    args.hf_token,
+                ],
+                env,
+            )
 
         url = f"http://{args.host}:{args.port}"
         webbrowser.open(url)
-        os.execvpe(
-            "uvicorn",
-            [
-                "uvicorn",
-                "jlens.serve:api",
-                "--host",
-                args.host,
-                "--port",
-                str(args.port),
-            ],
-            env,
-        )
+
+        import uvicorn
+
+        with modal.enable_output():
+            with app.run():
+                uvicorn.run(api, host=args.host, port=args.port)
+
+
+if __name__ == "__main__":
+    main()

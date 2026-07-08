@@ -148,7 +148,13 @@ async function post(path, body) {
     headers: {"content-type": "application/json"},
     body: JSON.stringify(body),
   });
-  return await res.json();
+  const text = await res.text();
+  let data = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {}
+  if (!res.ok) throw new Error(data.detail || text || res.statusText);
+  return data;
 }
 
 function paint(row, data) {
@@ -183,28 +189,40 @@ document.querySelector("#add").onclick = () => {
 
 document.querySelector("#serve").onclick = async () => {
   document.querySelector("#status").textContent = "Loading";
-  await post("/api/serve", baseBody());
-  document.querySelector("#serve").disabled = true;
-  document.querySelector("#stop").disabled = false;
-  document.querySelector("#submit").disabled = false;
-  document.querySelector("#status").textContent = "Ready";
+  try {
+    await post("/api/serve", baseBody());
+    document.querySelector("#serve").disabled = true;
+    document.querySelector("#stop").disabled = false;
+    document.querySelector("#submit").disabled = false;
+    document.querySelector("#status").textContent = "Ready";
+  } catch (err) {
+    document.querySelector("#status").textContent = err.message;
+  }
 };
 
 document.querySelector("#stop").onclick = async () => {
-  await post("/api/stop", baseBody());
-  document.querySelector("#serve").disabled = false;
-  document.querySelector("#stop").disabled = true;
-  document.querySelector("#submit").disabled = true;
-  document.querySelector("#status").textContent = "Stopped";
+  try {
+    await post("/api/stop", baseBody());
+    document.querySelector("#serve").disabled = false;
+    document.querySelector("#stop").disabled = true;
+    document.querySelector("#submit").disabled = true;
+    document.querySelector("#status").textContent = "Stopped";
+  } catch (err) {
+    document.querySelector("#status").textContent = err.message;
+  }
 };
 
 document.querySelector("#submit").onclick = async () => {
   document.querySelector("#status").textContent = "Running";
-  const data = await post("/api/run", fullBody());
-  lastHtml = data.html;
-  document.querySelector("#report").srcdoc = lastHtml;
-  document.querySelector("#export").disabled = false;
-  document.querySelector("#status").textContent = "Done";
+  try {
+    const data = await post("/api/run", fullBody());
+    lastHtml = data.html;
+    document.querySelector("#report").srcdoc = lastHtml;
+    document.querySelector("#export").disabled = false;
+    document.querySelector("#status").textContent = "Done";
+  } catch (err) {
+    document.querySelector("#status").textContent = err.message;
+  }
 };
 
 document.querySelector("#export").onclick = () => {
