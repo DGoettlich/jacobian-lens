@@ -10,7 +10,7 @@ def page() -> str:
     .row { display: flex; gap: 10px; align-items: flex-start; margin: 10px 0; }
     .field { display: flex; flex-direction: column; gap: 4px; }
     label { font-weight: 600; }
-    input, textarea, button { font: inherit; }
+    input, textarea, button, select { font: inherit; }
     input { width: 360px; }
     input.choice { width: 180px; }
     textarea { width: 600px; height: 64px; }
@@ -19,6 +19,7 @@ def page() -> str:
     button.stop { background: #cf222e; border-color: #cf222e; color: white; }
     button:disabled { opacity: 0.5; cursor: default; }
     .choice-row { align-items: center; }
+    .focus { display: flex; align-items: center; gap: 6px; font-weight: 600; }
     .tokens { max-width: 780px; line-height: 1.9; }
     .tok { padding: 2px 4px; margin: 1px; border-radius: 2px; display: inline-block; }
     .answer { outline: 2px solid #1f2328; }
@@ -69,6 +70,7 @@ def page() -> str:
 
   <div class="row">
     <button id="add">+ choice</button>
+    <label class="focus">Focus <select id="active-choice"></select></label>
     <button id="serve" class="primary">Serve</button>
     <button id="stop" class="stop" disabled>Stop</button>
     <button id="submit" disabled>Submit</button>
@@ -104,13 +106,11 @@ function choices() {
 }
 
 function fullBody() {
-  const active = [...document.querySelectorAll(".choice-row")]
-    .find(r => r.querySelector("input[type=radio]").checked);
   return {
     ...baseBody(),
     question: document.querySelector("#question").value,
     choices: choices(),
-    active_choice: active ? active.querySelector(".choice").value.trim() : null,
+    active_choice: document.querySelector("#active-choice").value || null,
   };
 }
 
@@ -120,15 +120,26 @@ function choiceRow(value) {
   div.innerHTML = `
     <input class="choice" value="${esc(value)}">
     <button class="remove">x</button>
-    <label><input type="radio" name="active"> active</label>
     <div class="tokens"></div>
   `;
   div.querySelector(".remove").onclick = () => {
     div.remove();
+    updateFocusChoices();
     scheduleTokenize();
   };
-  div.querySelector(".choice").oninput = scheduleTokenize;
+  div.querySelector(".choice").oninput = () => {
+    updateFocusChoices();
+    scheduleTokenize();
+  };
   return div;
+}
+
+function updateFocusChoices() {
+  const select = document.querySelector("#active-choice");
+  const selected = select.value;
+  const opts = choices();
+  select.innerHTML = opts.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join("");
+  select.value = opts.includes(selected) ? selected : (opts[0] || "");
 }
 
 async function post(path, body) {
@@ -167,6 +178,7 @@ function scheduleTokenize() {
 
 document.querySelector("#add").onclick = () => {
   document.querySelector("#choices").appendChild(choiceRow(""));
+  updateFocusChoices();
 };
 
 document.querySelector("#serve").onclick = async () => {
@@ -217,7 +229,7 @@ document.querySelector("#architecture").onchange = scheduleTokenize;
 ["Paris", "London", "Berlin"].forEach(x => {
   document.querySelector("#choices").appendChild(choiceRow(x));
 });
-document.querySelector("input[type=radio]").checked = true;
+updateFocusChoices();
 scheduleTokenize();
 </script>
 </body>
