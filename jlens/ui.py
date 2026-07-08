@@ -40,11 +40,11 @@ def page() -> str:
   <div class="row">
     <div class="field">
       <label>Model</label>
-      <input id="model" value="history-llms/ranke-0.6b-1913-1106-cont-1">
+      <input id="model" value="uzh-echist-org/Ranke-4B-1913">
     </div>
     <div class="field">
       <label>Architecture model / tokenizer</label>
-      <input id="architecture" value="Qwen/Qwen3-0.6B">
+      <input id="architecture" value="">
     </div>
   </div>
 
@@ -55,7 +55,7 @@ def page() -> str:
     </div>
     <div class="field">
       <label>Lens file</label>
-      <input id="lens-file" value="ranke-0.6b-1913-1106-cont-1.pt">
+      <input id="lens-file" value="Ranke-4B-1913.pt">
     </div>
   </div>
 
