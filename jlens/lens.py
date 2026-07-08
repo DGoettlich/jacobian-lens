@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import torch
 
 from jlens.hooks import ActivationRecorder
 from jlens.protocol import LensModel
+
+if TYPE_CHECKING:
+    from jlens.interventions import InterventionResult
 
 
 class JacobianLens:
@@ -141,6 +145,67 @@ class JacobianLens:
         """
         J_bar = self.jacobians[layer].to(residual.device)
         return residual @ J_bar.T
+
+    def steer(
+        self,
+        model: LensModel,
+        prompt: str,
+        token_id: int,
+        strength: float,
+        *,
+        layers: Sequence[int] | None = None,
+        positions: Sequence[int] | None = None,
+        max_seq_len: int = 512,
+    ) -> InterventionResult:
+        """Run ``prompt`` while adding a J-lens direction for ``token_id``.
+
+        Positive ``strength`` makes the token direction more prominent;
+        negative ``strength`` suppresses it. The returned logits are the
+        model's ordinary output and the output after the intervention.
+        """
+        from jlens.interventions import steer
+
+        return steer(
+            model,
+            self,
+            prompt,
+            token_id,
+            strength,
+            layers=layers,
+            positions=positions,
+            max_seq_len=max_seq_len,
+        )
+
+    def swap(
+        self,
+        model: LensModel,
+        prompt: str,
+        source_token_id: int,
+        target_token_id: int,
+        *,
+        strength: float = 1.0,
+        layers: Sequence[int] | None = None,
+        positions: Sequence[int] | None = None,
+        max_seq_len: int = 512,
+    ) -> InterventionResult:
+        """Run ``prompt`` while swapping one J-lens token direction for another.
+
+        ``strength=1`` swaps the source/target coordinates in their two-vector
+        span; smaller values make the swap partial, larger values over-apply it.
+        """
+        from jlens.interventions import swap
+
+        return swap(
+            model,
+            self,
+            prompt,
+            source_token_id,
+            target_token_id,
+            strength=strength,
+            layers=layers,
+            positions=positions,
+            max_seq_len=max_seq_len,
+        )
 
     @torch.no_grad()
     def apply(
