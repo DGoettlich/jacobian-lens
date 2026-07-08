@@ -22,76 +22,145 @@ if __name__ == "__main__":
     out_path = Path("reports/time-lock") / f"{model_slug}.html"
 
     probes = {
-        "great_wall_country_001": (
+        "capital_france_001": (
             -1000,
             "pre_cutoff",
-            "The Great Wall is in",
-            "China",
-            ["Japan", "China", "Korea", "Mongolia"],
+            "The capital of France is",
+            "Paris",
+            ["Paris", "London", "Berlin", "Rome", "Vienna", "Madrid", "Athens"],
         ),
-        "roman_colosseum_city_001": (
+        "capital_england_001": (
             -1000,
             "pre_cutoff",
-            "The Colosseum is in",
-            "Rome",
-            ["Rome", "Athens", "Naples", "Florence"],
+            "The capital of England is",
+            "London",
+            ["London", "Paris", "Berlin", "Rome", "Vienna", "Madrid", "Athens"],
         ),
-        "red_planet_mars_001": (
+        "hamlet_author_001": (
+            1600,
+            "pre_cutoff",
+            "The author of Hamlet was",
+            "Shakespeare",
+            ["Shakespeare", "Dante", "Homer", "Milton", "Byron", "Shelley", "Dickens", "Scott"],
+        ),
+        "waterloo_defeated_napoleon_001": (
+            1815,
+            "pre_cutoff",
+            "In the Battle of Waterloo, Napoleon was defeated by",
+            "Wellington",
+            ["Wellington", "Nelson", "Alexander", "Frederick", "Washington", "Caesar"],
+        ),
+        "evolution_darwin_001": (
+            1859,
+            "pre_cutoff",
+            "The theory of evolution is associated with",
+            "Darwin",
+            ["Darwin", "Wallace", "Newton", "Kepler", "Aristotle", "Edison", "Bell"],
+        ),
+        "gravitation_newton_001": (
+            1687,
+            "pre_cutoff",
+            "The law of gravitation is associated with",
+            "Newton",
+            ["Newton", "Kepler", "Darwin", "Wallace", "Aristotle", "Edison", "Bell"],
+        ),
+        "pyramids_egypt_001": (
             -1000,
             "pre_cutoff",
-            "The planet known as the Red Planet is",
-            "Mars",
-            ["Venus", "Jupiter", "Mars", "Mercury"],
+            "The pyramids are located in",
+            "Egypt",
+            ["Egypt", "Babylon", "Greece", "Rome", "India", "Athens", "Mexico"],
         ),
-        "fort_sumter_war_1861_001": (
-            1861,
+        "america_columbus_001": (
+            1492,
             "pre_cutoff",
-            "In 1861, Fort Sumter came under Confederate fire in",
-            "April",
-            ["January", "February", "March", "April"],
+            "America was discovered by",
+            "Columbus",
+            ["Columbus", "Cook", "Drake", "Hudson", "Raleigh"],
         ),
-        "red_cross_first_meeting_city_1863_001": (
-            1863,
+        "first_us_president_001": (
+            1789,
             "pre_cutoff",
-            "The Red Cross committee that began in 1863 first met in",
-            "Geneva",
-            ["Bern", "Basel", "Geneva", "Zurich"],
+            "The first President of the United States was",
+            "Washington",
+            ["Washington", "Lincoln", "Jefferson", "Adams", "Franklin"],
         ),
-        "lusitania_sinking_date_1915_001": (
-            1915,
-            "post_cutoff",
-            "The Lusitania was sunk on May ",
-            "7",
-            ["5", "6", "7", "8"],
-            True,
+        "wwi_us_president_001": (
+            1917,
+            "later_history",
+            "The American president during World War I was",
+            "Wilson",
+            ["Wilson", "Roosevelt", "Harding", "Hoover", "Lincoln"],
         ),
-        "spanish_flu_name_country_1918_001": (
-            1918,
-            "post_cutoff",
-            "The 1918 influenza epidemic was named after",
-            "Spain",
-            ["Sweden", "Spain", "Switzerland", "Norway"],
+        "russian_revolution_tsar_001": (
+            1917,
+            "later_history",
+            "The Russian Revolution overthrew Tsar",
+            "Nicholas",
+            ["Nicholas", "Lenin", "Stalin", "Wilhelm", "Wilson"],
         ),
-        "avery_macleod_mccarty_dna_1944_001": (
-            1944,
-            "post_cutoff",
-            "Avery, MacLeod, and McCarty showed in 1944 that the transforming principle was",
-            "DNA",
-            ["DNA", "RNA", "protein", "lipid"],
+        "soviet_russia_leader_001": (
+            1917,
+            "later_history",
+            "The first leader of Soviet Russia was",
+            "Lenin",
+            ["Lenin", "Stalin", "Trotsky", "Nicholas", "Wilson"],
         ),
-        "treaty_of_rome_eec_1957_001": (
-            1957,
-            "post_cutoff",
-            "The European Economic Community was founded by the Treaty of",
-            "Rome",
-            ["Rome", "Paris", "Brussels", "Venice"],
+        "mussolini_country_001": (
+            1922,
+            "later_history",
+            "The country ruled by Mussolini was",
+            "Italy",
+            ["Italy", "Germany", "France", "Spain", "Russia"],
         ),
-        "mlk_assassination_city_1968_001": (
-            1968,
-            "post_cutoff",
-            "Martin Luther King Jr. was assassinated in",
-            "Memphis",
-            ["Memphis", "Atlanta", "Birmingham", "Nashville"],
+        "wwii_german_dictator_001": (
+            1939,
+            "later_history",
+            "The German dictator in World War II was",
+            "Hitler",
+            ["Hitler", "Stalin", "Lenin", "Churchill", "Roosevelt"],
+        ),
+        "wwii_poland_invasion_001": (
+            1939,
+            "later_history",
+            "The country invaded by Germany in 1939 was",
+            "Poland",
+            ["Poland", "France", "Russia", "Austria", "Belgium"],
+        ),
+        "pearl_harbor_attacker_001": (
+            1941,
+            "later_history",
+            "The country that attacked Pearl Harbor was",
+            "Japan",
+            ["Japan", "Germany", "Italy", "Russia", "China"],
+        ),
+        "wwii_soviet_leader_001": (
+            1941,
+            "later_history",
+            "The Soviet leader during World War II was",
+            "Stalin",
+            ["Stalin", "Lenin", "Hitler", "Churchill", "Roosevelt"],
+        ),
+        "wwii_british_leader_001": (
+            1940,
+            "later_history",
+            "The British prime minister who led Britain through most of World War II was",
+            "Churchill",
+            ["Churchill", "Wilson", "Roosevelt", "Hitler", "Stalin"],
+        ),
+        "wwii_us_president_001": (
+            1941,
+            "later_history",
+            "The American president for most of World War II was",
+            "Roosevelt",
+            ["Roosevelt", "Wilson", "Harding", "Hoover", "Truman"],
+        ),
+        "moon_first_man_001": (
+            1969,
+            "later_history",
+            "The first man on the Moon was",
+            "Armstrong",
+            ["Armstrong", "Collins", "Shepard", "Glenn"],
         ),
     }
 
@@ -105,7 +174,7 @@ if __name__ == "__main__":
     model = jlens.from_hf(hf_model, tokenizer)
     lens = jlens.JacobianLens.from_pretrained(lens_repo, filename=args.lens)
 
-    sections = {"pre_cutoff": [], "post_cutoff": []}
+    sections = {"pre_cutoff": [], "later_history": []}
     for name, spec in probes.items():
         year, group, prompt, active, candidates, *rest = spec
         raw_candidates = bool(rest and rest[0])
@@ -178,8 +247,8 @@ if __name__ == "__main__":
   <p><b>Lens:</b> {html.escape(lens_repo + "/" + args.lens)}</p>
   <h2>Pre-cutoff controls</h2>
   {''.join(sections["pre_cutoff"])}
-  <h2>Post-cutoff probes</h2>
-  {''.join(sections["post_cutoff"])}
+  <h2>Later-history probes</h2>
+  {''.join(sections["later_history"])}
 </body>
 </html>
 """
