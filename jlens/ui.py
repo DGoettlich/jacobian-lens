@@ -188,7 +188,7 @@ document.querySelector("#add").onclick = () => {
 };
 
 document.querySelector("#serve").onclick = async () => {
-  document.querySelector("#status").textContent = "Loading";
+  document.querySelector("#status").textContent = "Loading model/lens on Modal. First 4B load can take a few minutes.";
   try {
     await post("/api/serve", baseBody());
     document.querySelector("#serve").disabled = true;

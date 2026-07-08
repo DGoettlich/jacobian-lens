@@ -59,14 +59,22 @@ def tokenize_choices(tokenizer, question: str, choices: Sequence[str]) -> list[d
     return rows
 
 
+secret_name = os.environ.get("JLENS_HF_TOKEN_SECRET", "HLLM")
+
 image = (
     modal.Image.debian_slim(python_version="3.11")
-    .uv_pip_install("torch", "huggingface_hub", "transformers>=5.5", "numpy")
+    .uv_pip_install(
+        "torch",
+        "huggingface_hub",
+        "transformers>=5.5",
+        "numpy",
+        "fastapi[standard]",
+    )
+    .env({"JLENS_HF_TOKEN_SECRET": secret_name})
     .add_local_python_source("jlens")
 )
 
-secret_name = os.environ.get("JLENS_HF_TOKEN_SECRET")
-secrets = [modal.Secret.from_name(secret_name)] if secret_name else []
+secrets = [modal.Secret.from_name(secret_name)]
 app = modal.App("jlens-ui", image=image)
 api = FastAPI()
 tokenizers = {}
@@ -100,26 +108,33 @@ class LensWorker:
         import jlens
 
         tokenizer_source = self.architecture_model or self.model_name
+        print(f"loading tokenizer: {tokenizer_source}", flush=True)
         self.tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
 
         if self.architecture_model:
+            print(f"loading config: {self.architecture_model}", flush=True)
             config = AutoConfig.from_pretrained(self.architecture_model)
+            print(f"loading model: {self.model_name}", flush=True)
             hf_model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 config=config,
                 torch_dtype=torch.bfloat16,
             ).cuda()
         else:
+            print(f"loading model: {self.model_name}", flush=True)
             hf_model = AutoModelForCausalLM.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.bfloat16,
             ).cuda()
 
+        print("wrapping HF model", flush=True)
         self.model = jlens.from_hf(hf_model, self.tokenizer)
+        print(f"loading lens: {self.lens_repo}/{self.lens_file}", flush=True)
         self.lens = jlens.JacobianLens.from_pretrained(
             self.lens_repo,
             filename=self.lens_file,
         )
+        print("worker ready", flush=True)
         return {"served": True}
 
     @modal.method()
