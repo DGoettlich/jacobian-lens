@@ -205,13 +205,16 @@ class LensWorker:
         ]
         return layers or self.lens.source_layers
 
-    def generated(self, token_ids: list[int]) -> dict:
+    def generated(self, prompt: str, token_ids: list[int]) -> dict:
         pieces = [
             {"id": int(token_id), "text": self.decode_token(token_id)}
             for token_id in token_ids
         ]
+        continuation = "".join(piece["text"] for piece in pieces)
         return {
-            "continuation": "".join(piece["text"] for piece in pieces),
+            "prompt": prompt,
+            "continuation": continuation,
+            "full_text": prompt + continuation,
             "tokens": pieces,
         }
 
@@ -278,8 +281,8 @@ class LensWorker:
         return {
             "tokens": token_rows,
             "layers": layers,
-            "baseline": self.generated(baseline_ids),
-            "intervened": self.generated(intervened_ids),
+            "baseline": self.generated(question, baseline_ids),
+            "intervened": self.generated(question, intervened_ids),
         }
 
 

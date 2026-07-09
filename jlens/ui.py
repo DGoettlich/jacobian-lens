@@ -43,6 +43,8 @@ def page() -> str:
     .result-col h3 { margin: 8px 0; font-size: 15px; }
     .generated { white-space: pre-wrap; border: 1px solid #d0d7de; border-radius: 6px; padding: 10px; min-height: 70px; }
     .generated-token { margin: 2px; padding: 3px 5px; border-radius: 4px; display: inline-block; background: #ddf4ff; }
+    .full-text { white-space: pre-wrap; margin-top: 8px; padding: 8px; background: #f6f8fa; border-radius: 6px; }
+    .suffix { background: #fff8c5; }
     .muted { color: #57606a; }
     iframe { width: 100%; height: 860px; border: 1px solid #d0d7de; margin-top: 18px; }
   </style>
@@ -304,10 +306,13 @@ function renderGeneration(data, label) {
   function col(title, generated) {
     return `<div class="result-col">
       <h3>${title}</h3>
+      <div class="muted">Generated continuation only</div>
       <div class="generated">${generated.tokens.map(token => (
         `<span class="generated-token" title="${token.id}">${esc(token.text)}</span>`
       )).join("")}</div>
       <div class="muted">${generated.tokens.map(token => token.id).join(" ")}</div>
+      <div class="muted">Full text after generation</div>
+      <div class="full-text">${esc(generated.prompt)}<span class="suffix">${esc(generated.continuation)}</span></div>
     </div>`;
   }
   document.querySelector("#generation-view").innerHTML = `
