@@ -10,6 +10,7 @@ if __name__ == "__main__":
     lens_path = "artifacts/ranke-1913-jlens.pt"
     dtype = torch.bfloat16
     strength = 1.0
+    cascading = False
     max_new_tokens = 1
 
     hf_model = AutoModelForCausalLM.from_pretrained(
@@ -52,6 +53,7 @@ if __name__ == "__main__":
                     strength=strength,
                     layers=layers,
                     positions=None,
+                    cascading=cascading,
                 )
                 next_id = int(logits[-1].argmax().item())
             text += tokenizer.decode([next_id], clean_up_tokenization_spaces=False)
@@ -96,10 +98,14 @@ if __name__ == "__main__":
             strength=strength,
             layers=layers,
             positions=None,
+            cascading=cascading,
         )
         base = base_logits[-1]
         changed = changed_logits[-1]
-        print(f"swap strength={strength} layers={layers[0]}..{layers[-1]}")
+        print(
+            f"swap strength={strength} cascading={cascading} "
+            f"layers={layers[0]}..{layers[-1]}"
+        )
         for label, token_id in tracked_tokens:
             print(
                 f"  {label:12s} "

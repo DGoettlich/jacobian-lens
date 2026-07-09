@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 from jlens.hooks import ActivationRecorder
-from jlens.interventions import Intervention, _ActivationEditor, _layers
+from jlens.interventions import Intervention, _get_editing_context, _layers
 from jlens.lens import JacobianLens
 from jlens.protocol import LensModel
 
@@ -261,10 +261,10 @@ def compute_slice(
     else:
         edit_layers = _layers(model, lens, intervention.layers)
 
-        with _ActivationEditor(
-            model.layers,
+        with _get_editing_context(
             model,
             lens,
+            input_ids,
             intervention,
             edit_layers,
         ), ActivationRecorder(

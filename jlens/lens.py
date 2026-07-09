@@ -151,6 +151,7 @@ class JacobianLens:
         *,
         layers: Sequence[int] | None = None,
         positions: Sequence[int] | None = None,
+        cascading: bool = True,
         max_seq_len: int = 512,
     ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
         """Run ``prompt`` while adding a J-lens direction for ``token_id``.
@@ -170,6 +171,7 @@ class JacobianLens:
             strength,
             layers=layers,
             positions=positions,
+            cascading=cascading,
             max_seq_len=max_seq_len,
         )
 
@@ -183,12 +185,14 @@ class JacobianLens:
         strength: float = 1.0,
         layers: Sequence[int] | None = None,
         positions: Sequence[int] | None = None,
+        cascading: bool = True,
         max_seq_len: int = 512,
     ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
-        """Run ``prompt`` while swapping one J-lens token direction for another.
+        """Run ``prompt`` while moving source-token weight onto target.
 
-        ``strength=1`` swaps the source/target coordinates in their two-vector
-        span; smaller values make the swap partial, larger values over-apply it.
+        ``strength=1`` applies the full source-to-target edit in their
+        two-vector span; smaller values make the edit partial, larger values
+        over-apply it.
         Returns the same ``(lens_logits, model_logits, input_ids)`` tuple as
         :meth:`apply`, computed from the intervened forward pass.
         """
@@ -203,6 +207,7 @@ class JacobianLens:
             strength=strength,
             layers=layers,
             positions=positions,
+            cascading=cascading,
             max_seq_len=max_seq_len,
         )
 
