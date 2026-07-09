@@ -7,7 +7,7 @@ from jlens._logging import configure_logging
 from jlens.fitting import fit, jacobian_for_prompt
 from jlens.hf import HFLensModel, Layout, from_hf
 from jlens.hooks import ActivationRecorder
-from jlens.interventions import InterventionResult
+from jlens.interventions import InterventionResult, Steer, Swap
 from jlens.lens import JacobianLens
 from jlens.protocol import LensModel
 
@@ -18,6 +18,8 @@ __all__ = [
     "JacobianLens",
     "Layout",
     "LensModel",
+    "Steer",
+    "Swap",
     "configure_logging",
     "fit",
     "from_hf",

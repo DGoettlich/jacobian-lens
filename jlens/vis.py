@@ -25,6 +25,7 @@ import numpy as np
 import torch
 
 from jlens.hooks import ActivationRecorder
+from jlens.interventions import Intervention, _ActivationEditor, _deltas, _layers
 from jlens.lens import JacobianLens
 from jlens.protocol import LensModel
 
@@ -203,6 +204,7 @@ def compute_slice(
     last_n_tokens: int | None = None,
     max_seq_len: int = 512,
     mask_display: bool = False,
+    intervention: Intervention | None = None,
 ) -> SliceData:
     """Compute the position x layer lens slice for ``prompt``.
 
@@ -223,6 +225,8 @@ def compute_slice(
             shows the whole prompt and labels positions with their absolute
             indices. ``None`` (default) renders every position.
         max_seq_len: Truncate the prompt to this many tokens.
+        intervention: Optional J-lens intervention to apply during a second
+            forward pass before recording the activations used for this slice.
     """
     tokenizer = model.tokenizer
     pinned_token_ids = set(pinned_token_ids or ())
@@ -248,9 +252,43 @@ def compute_slice(
         for t in context_token_ids
     ]
 
-    with ActivationRecorder(model.layers, at=layers) as recorder:
-        model.forward(input_ids)
-        activations = {layer: recorder.activations[layer].detach() for layer in layers}
+    if intervention is None:
+        with ActivationRecorder(model.layers, at=layers) as recorder:
+            model.forward(input_ids)
+            activations = {
+                layer: recorder.activations[layer].detach() for layer in layers
+            }
+    else:
+        edit_layers = _layers(model, lens, intervention.layers)
+        baseline_layers = sorted(set(layers) | set(edit_layers))
+
+        with ActivationRecorder(model.layers, at=baseline_layers) as recorder:
+            model.forward(input_ids)
+            baseline_activations = {
+                layer: recorder.activations[layer].detach()
+                for layer in baseline_layers
+            }
+
+        def delta_fn(
+            layer: int, residual: torch.Tensor, scale: torch.Tensor
+        ) -> torch.Tensor:
+            return intervention.delta(model, lens, layer, residual, scale)
+
+        deltas = _deltas(
+            baseline_activations,
+            edit_layers,
+            intervention.positions,
+            delta_fn,
+        )
+
+        # Register the editor first so the recorder sees edited layer outputs.
+        with _ActivationEditor(model.layers, deltas), ActivationRecorder(
+            model.layers, at=layers
+        ) as recorder:
+            model.forward(input_ids)
+            activations = {
+                layer: recorder.activations[layer].detach() for layer in layers
+            }
 
     def lens_logits(layer: int) -> torch.Tensor:
         residual = activations[layer][0, start:].float()
