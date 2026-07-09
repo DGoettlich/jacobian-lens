@@ -261,7 +261,7 @@ def _deltas(
     delta_fn: Callable[[int, torch.Tensor, torch.Tensor], torch.Tensor],
 ) -> dict[int, torch.Tensor]:
     seq_len = next(iter(activations.values())).shape[1]
-    pos_list = _positions(positions, seq_len)
+    pos_list = _token_positions_to_edit(positions, seq_len)
     deltas = {layer: torch.zeros_like(activations[layer][0].float()) for layer in layers}
 
     for layer in layers:
@@ -290,7 +290,9 @@ def _layers(
     return list(dict.fromkeys(int(layer) for layer in selected))
 
 
-def _positions(positions: Sequence[int] | None, seq_len: int) -> list[int]:
+def _token_positions_to_edit(
+    positions: Sequence[int] | None, seq_len: int
+) -> list[int]:
     if positions is None:
         return list(range(seq_len))
 
