@@ -20,6 +20,68 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class Steer:
+    """Add one J-lens token direction to selected residuals."""
+
+    token_id: int
+    strength: float
+    layers: Sequence[int] | None = None
+    positions: Sequence[int] | None = None
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.strength):
+            raise ValueError("strength must be finite")
+
+    def delta(
+        self,
+        model: LensModel,
+        lens: JacobianLens,
+        layer: int,
+        residual: torch.Tensor,
+        scale: torch.Tensor,
+    ) -> torch.Tensor:
+        token_vector = _token_direction(model, lens, residual, layer, self.token_id)
+        return float(self.strength) * scale * token_vector
+
+
+@dataclass(frozen=True)
+class Swap:
+    """Swap two J-lens token weights in selected residuals."""
+
+    source_token_id: int
+    target_token_id: int
+    strength: float = 1.0
+    layers: Sequence[int] | None = None
+    positions: Sequence[int] | None = None
+
+    def __post_init__(self) -> None:
+        if not math.isfinite(self.strength) or self.strength < 0:
+            raise ValueError("strength must be finite and non-negative")
+
+    def delta(
+        self,
+        model: LensModel,
+        lens: JacobianLens,
+        layer: int,
+        residual: torch.Tensor,
+        scale: torch.Tensor,
+    ) -> torch.Tensor:
+        del scale
+        source_vector = _token_direction(
+            model, lens, residual, layer, self.source_token_id
+        )
+        target_vector = _token_direction(
+            model, lens, residual, layer, self.target_token_id
+        )
+        return float(self.strength) * _swap_delta(
+            residual, source_vector, target_vector
+        )
+
+
+Intervention = Steer | Swap
+
+
+@dataclass(frozen=True)
 class InterventionResult:
     """Baseline and intervened logits for the same prompt."""
 
@@ -80,14 +142,8 @@ def steer(
     max_seq_len: int = 512,
 ) -> InterventionResult:
     """Run ``prompt`` while adding a J-lens direction for ``token_id``."""
-    if not math.isfinite(strength):
-        raise ValueError("strength must be finite")
-
-    def delta(layer: int, residual: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        token_vector = _token_direction(model, lens, residual, layer, token_id)
-        return float(strength) * scale * token_vector
-
-    return _run(model, lens, prompt, delta, layers, positions, max_seq_len)
+    intervention = Steer(token_id, strength, layers, positions)
+    return _run(model, lens, prompt, intervention, max_seq_len)
 
 
 def swap(
@@ -108,21 +164,8 @@ def swap(
     ``c = V^dagger h``, swap the two coordinates, and patch only the component
     of ``h`` inside ``span(V)``.
     """
-    if not math.isfinite(strength) or strength < 0:
-        raise ValueError("strength must be finite and non-negative")
-
-    def delta(layer: int, residual: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        source_vector = _token_direction(
-            model, lens, residual, layer, source_token_id
-        )
-        target_vector = _token_direction(
-            model, lens, residual, layer, target_token_id
-        )
-        return float(strength) * _swap_delta(
-            residual, source_vector, target_vector
-        )
-
-    return _run(model, lens, prompt, delta, layers, positions, max_seq_len)
+    intervention = Swap(source_token_id, target_token_id, strength, layers, positions)
+    return _run(model, lens, prompt, intervention, max_seq_len)
 
 
 def _swap_delta(
@@ -179,12 +222,10 @@ def _run(
     model: LensModel,
     lens: JacobianLens,
     prompt: str,
-    delta_fn: Callable[[int, torch.Tensor, torch.Tensor], torch.Tensor],
-    layers: Sequence[int] | None,
-    positions: Sequence[int] | None,
+    intervention: Intervention,
     max_seq_len: int,
 ) -> InterventionResult:
-    edit_layers = _layers(model, lens, layers)
+    edit_layers = _layers(model, lens, intervention.layers)
     input_ids = model.encode(prompt, max_length=max_seq_len)
     if input_ids.shape[0] != 1:
         raise ValueError("interventions require batch size 1")
@@ -197,7 +238,11 @@ def _run(
         activations = {layer: act.detach() for layer, act in recorder.activations.items()}
 
     baseline = model.unembed(activations[final_layer][0].float()).float().cpu()
-    deltas = _deltas(activations, edit_layers, positions, delta_fn)
+
+    def delta_fn(layer: int, residual: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+        return intervention.delta(model, lens, layer, residual, scale)
+
+    deltas = _deltas(activations, edit_layers, intervention.positions, delta_fn)
 
     with torch.no_grad(), _ActivationEditor(model.layers, deltas), ActivationRecorder(
         model.layers, at=[final_layer]
