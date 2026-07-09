@@ -33,10 +33,12 @@ def page() -> str:
     #status { min-height: 20px; margin-top: 10px; }
     .panel { margin-top: 18px; padding-top: 16px; border-top: 1px solid #d0d7de; }
     .panel h2 { margin: 0 0 10px; font-size: 18px; }
+    .hint { color: #57606a; margin: -4px 0 12px; max-width: 860px; }
     input.small { width: 72px; }
     .intervention-row { display: grid; grid-template-columns: 180px 1fr; gap: 12px; align-items: start; margin: 10px 0; }
     .intervention-row input { width: 170px; }
-    .token-check { line-height: 1.9; min-height: 38px; }
+    .token-check { line-height: 1.9; min-height: 38px; padding: 8px; background: #f6f8fa; border-radius: 6px; }
+    .check-title { color: #57606a; font-size: 12px; margin-bottom: 4px; }
     .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; max-width: 900px; }
     .result-col h3 { margin: 8px 0; font-size: 15px; }
     .generated { white-space: pre-wrap; border: 1px solid #d0d7de; border-radius: 6px; padding: 10px; min-height: 70px; }
@@ -93,6 +95,10 @@ def page() -> str:
 
   <div class="panel">
     <h2>Generate With Intervention</h2>
+    <div class="hint">
+      Source and target are only tokenization checks for <code>question + " " + token</code>.
+      Generation starts from the question alone; generated tokens are appended separately below.
+    </div>
     <div class="intervention-row">
       <label>Source token <input id="source" value="Paris"></label>
       <div id="source-check" class="token-check"></div>
@@ -206,7 +212,7 @@ function tokenizationHtml(data) {
   const status = data.single_token
     ? `<span class="ok">single answer token: ${data.answer_ids[0]}</span>`
     : `<span class="bad">answer tokens: [${data.answer_ids.join(", ")}]</span>`;
-  return `${spans}<br>${status}`;
+  return `<div class="check-title">Tokenization check only: question + candidate</div>${spans}<br>${status}`;
 }
 
 async function tokenize() {
