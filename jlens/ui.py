@@ -39,12 +39,8 @@ def page() -> str:
     .intervention-row input { width: 170px; }
     .token-check { line-height: 1.9; min-height: 38px; padding: 8px; background: #f6f8fa; border-radius: 6px; }
     .check-title { color: #57606a; font-size: 12px; margin-bottom: 4px; }
-    .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; max-width: 900px; }
-    .result-col h3 { margin: 8px 0; font-size: 15px; }
-    .generated { white-space: pre-wrap; border: 1px solid #d0d7de; border-radius: 6px; padding: 10px; min-height: 70px; }
-    .generated-token { margin: 2px; padding: 3px 5px; border-radius: 4px; display: inline-block; background: #ddf4ff; }
-    .full-text { white-space: pre-wrap; margin-top: 8px; padding: 8px; background: #f6f8fa; border-radius: 6px; }
-    .suffix { background: #fff8c5; }
+    .report-tabs { display: flex; gap: 8px; margin-top: 18px; }
+    .report-tabs button.active { border-color: #0969da; color: #0969da; font-weight: 600; }
     .muted { color: #57606a; }
     iframe { width: 100%; height: 860px; border: 1px solid #d0d7de; margin-top: 18px; }
   </style>
@@ -105,10 +101,10 @@ def page() -> str:
   </div>
 
   <div class="panel">
-    <h2>Generate With Intervention</h2>
+    <h2>Intervened Reports</h2>
     <div class="hint">
       Source and target are only tokenization checks for <code>question + " " + token</code>.
-      Generation starts from the question alone; generated tokens are appended separately below.
+      Swap and Steer render a new native J-lens report from the question alone.
     </div>
     <div class="intervention-row">
       <label>Source token <input id="source" value="Paris"></label>
@@ -120,18 +116,18 @@ def page() -> str:
     </div>
     <div class="row">
       <label>Strength <input id="strength" class="small" type="number" value="1" min="0" step="0.1"></label>
-      <label>Max tokens <input id="max-tokens" class="small" type="number" value="16" min="1" max="64"></label>
       <button id="swap" disabled>Swap</button>
       <button id="steer" disabled>Steer</button>
     </div>
-    <div id="generation-view"></div>
   </div>
 
+  <div id="report-tabs" class="report-tabs"></div>
   <iframe id="report"></iframe>
 
 <script>
 let tokenMode = "text";
-let lastHtml = null;
+let activeReport = null;
+let reports = {};
 let tokenTimer = null;
 let interventionTimer = null;
 
@@ -235,6 +231,7 @@ async function tokenize() {
 }
 
 function scheduleTokenize() {
+  clearReports();
   clearTimeout(tokenTimer);
   tokenTimer = setTimeout(tokenize, 250);
   scheduleInterventionCheck();
@@ -298,60 +295,94 @@ async function checkInterventionTokens() {
 }
 
 function scheduleInterventionCheck() {
+  clearInterventionReports();
   clearTimeout(interventionTimer);
   interventionTimer = setTimeout(checkInterventionTokens, 250);
 }
 
-function renderGeneration(data, label) {
-  function col(title, generated) {
-    return `<div class="result-col">
-      <h3>${title}</h3>
-      <div class="muted">Generated continuation only</div>
-      <div class="generated">${generated.tokens.map(token => (
-        `<span class="generated-token" title="${token.id}">${esc(token.text)}</span>`
-      )).join("")}</div>
-      <div class="muted">${generated.tokens.map(token => token.id).join(" ")}</div>
-      <div class="muted">Full text after generation</div>
-      <div class="full-text">${esc(generated.prompt)}<span class="suffix">${esc(generated.continuation)}</span></div>
-    </div>`;
-  }
-  document.querySelector("#generation-view").innerHTML = `
-    <div class="muted">${label}; edited layers ${data.layers[0]}-${data.layers[data.layers.length - 1]}</div>
-    <div class="result-grid">
-      ${col("Baseline", data.baseline)}
-      ${col("Intervened", data.intervened)}
-    </div>
-  `;
+function clearReports() {
+  reports = {};
+  activeReport = null;
+  document.querySelector("#report-tabs").innerHTML = "";
+  document.querySelector("#report").srcdoc = "";
+  document.querySelector("#export").disabled = true;
 }
 
-async function generate(mode) {
-  document.querySelector("#status").textContent = mode === "swap" ? "Generating swap" : "Generating steer";
+function clearInterventionReports() {
+  for (const name of Object.keys(reports)) {
+    if (name !== "Baseline") delete reports[name];
+  }
+  if (activeReport && !(activeReport in reports)) {
+    activeReport = null;
+    if (reports.Baseline) {
+      showReport("Baseline");
+    } else {
+      document.querySelector("#report").srcdoc = "";
+      document.querySelector("#export").disabled = true;
+    }
+  }
+  renderReportTabs();
+}
+
+function showReport(name) {
+  activeReport = name;
+  document.querySelector("#report").srcdoc = reports[name];
+  document.querySelector("#export").disabled = false;
+  document.querySelectorAll("#report-tabs button").forEach(button => {
+    button.classList.toggle("active", button.dataset.report === name);
+  });
+}
+
+function saveReport(name, html) {
+  reports[name] = html;
+  renderReportTabs();
+  showReport(name);
+}
+
+function renderReportTabs() {
+  const names = Object.keys(reports);
+  document.querySelector("#report-tabs").innerHTML = names.map(name => (
+    `<button class="${name === activeReport ? "active" : ""}" data-report="${esc(name)}">${esc(name)}</button>`
+  )).join("");
+  document.querySelectorAll("#report-tabs button").forEach(button => {
+    button.onclick = () => showReport(button.dataset.report);
+  });
+}
+
+async function renderIntervention(mode) {
+  const label = mode === "swap" ? "Swap" : "Steer";
+  document.querySelector("#status").textContent = `Rendering ${label.toLowerCase()} report`;
   try {
-    const data = await post("/api/generate", {
+    if (!reports.Baseline) {
+      const baseline = await post("/api/run", fullBody());
+      saveReport("Baseline", baseline.html);
+    }
+    const data = await post("/api/intervene", {
       ...fullBody(),
       mode,
       source: document.querySelector("#source").value.trim(),
       target: document.querySelector("#target").value.trim(),
       strength: Number(document.querySelector("#strength").value || 1),
-      max_tokens: Number(document.querySelector("#max-tokens").value || 16),
     });
-    renderGeneration(data, mode === "swap" ? "Swap" : "Steer");
+    const name = mode === "swap"
+      ? `Swap ${document.querySelector("#source").value.trim()} -> ${document.querySelector("#target").value.trim()}`
+      : `Steer ${document.querySelector("#source").value.trim()}`;
+    saveReport(name, data.html);
     document.querySelector("#status").textContent = "Done";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
   }
 }
 
-document.querySelector("#swap").onclick = () => generate("swap");
-document.querySelector("#steer").onclick = () => generate("steer");
+document.querySelector("#swap").onclick = () => renderIntervention("swap");
+document.querySelector("#steer").onclick = () => renderIntervention("steer");
 
 document.querySelector("#submit").onclick = async () => {
   document.querySelector("#status").textContent = "Running";
   try {
+    clearReports();
     const data = await post("/api/run", fullBody());
-    lastHtml = data.html;
-    document.querySelector("#report").srcdoc = lastHtml;
-    document.querySelector("#export").disabled = false;
+    saveReport("Baseline", data.html);
     document.querySelector("#status").textContent = "Done";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
@@ -359,10 +390,10 @@ document.querySelector("#submit").onclick = async () => {
 };
 
 document.querySelector("#export").onclick = () => {
-  const blob = new Blob([lastHtml], {type: "text/html"});
+  const blob = new Blob([reports[activeReport]], {type: "text/html"});
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = "jlens-report.html";
+  a.download = `${activeReport || "jlens-report"}.html`;
   a.click();
   URL.revokeObjectURL(a.href);
 };
