@@ -230,7 +230,7 @@ class LensWorker:
                 source_id,
                 float(strength),
                 layers=layers,
-                positions=[-1],
+                positions=None,
             )
             label = f"Steer {source}"
         else:
@@ -241,7 +241,7 @@ class LensWorker:
                 target_id,
                 strength=float(strength),
                 layers=layers,
-                positions=[-1],
+                positions=None,
             )
             label = f"Swap {source} -> {target}"
 
