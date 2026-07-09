@@ -151,7 +151,7 @@ class JacobianLens:
         *,
         layers: Sequence[int] | None = None,
         positions: Sequence[int] | None = None,
-        cascading: bool = True,
+        cascading: bool = False,
         max_seq_len: int = 512,
     ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
         """Run ``prompt`` while adding a J-lens direction for ``token_id``.
@@ -185,7 +185,7 @@ class JacobianLens:
         strength: float = 1.0,
         layers: Sequence[int] | None = None,
         positions: Sequence[int] | None = None,
-        cascading: bool = True,
+        cascading: bool = False,
         max_seq_len: int = 512,
     ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
         """Run ``prompt`` while moving source-token weight onto target.

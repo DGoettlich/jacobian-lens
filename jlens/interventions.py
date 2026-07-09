@@ -28,7 +28,7 @@ class Steer:
     strength: float
     layers: Sequence[int] | None = None
     positions: Sequence[int] | None = None
-    cascading: bool = True
+    cascading: bool = False
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.strength):
@@ -55,7 +55,7 @@ class Swap:
     strength: float = 1.0
     layers: Sequence[int] | None = None
     positions: Sequence[int] | None = None
-    cascading: bool = True
+    cascading: bool = False
 
     def __post_init__(self) -> None:
         if not math.isfinite(self.strength) or self.strength < 0:
@@ -200,7 +200,7 @@ def steer(
     *,
     layers: Sequence[int] | None = None,
     positions: Sequence[int] | None = None,
-    cascading: bool = True,
+    cascading: bool = False,
     max_seq_len: int = 512,
 ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
     """Run ``prompt`` with a J-lens direction added to selected residuals."""
@@ -218,7 +218,7 @@ def swap(
     strength: float = 1.0,
     layers: Sequence[int] | None = None,
     positions: Sequence[int] | None = None,
-    cascading: bool = True,
+    cascading: bool = False,
     max_seq_len: int = 512,
 ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
     """Run ``prompt`` while moving source-token weight onto target.
