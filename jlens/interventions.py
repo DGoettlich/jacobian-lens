@@ -84,8 +84,8 @@ def steer(
         raise ValueError("strength must be finite")
 
     def delta(layer: int, residual: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        direction = _token_direction(model, lens, residual, layer, token_id)
-        return float(strength) * scale * direction
+        token_vector = _token_direction(model, lens, residual, layer, token_id)
+        return float(strength) * scale * token_vector
 
     return _run(model, lens, prompt, delta, layers, positions, max_seq_len)
 
@@ -112,20 +112,31 @@ def swap(
         raise ValueError("strength must be finite and non-negative")
 
     def delta(layer: int, residual: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        source = _token_direction(model, lens, residual, layer, source_token_id)
-        target = _token_direction(model, lens, residual, layer, target_token_id)
-        return float(strength) * _swap_delta(residual, source, target)
+        source_vector = _token_direction(
+            model, lens, residual, layer, source_token_id
+        )
+        target_vector = _token_direction(
+            model, lens, residual, layer, target_token_id
+        )
+        return float(strength) * _swap_delta(
+            residual, source_vector, target_vector
+        )
 
     return _run(model, lens, prompt, delta, layers, positions, max_seq_len)
 
 
 def _swap_delta(
-    residual: torch.Tensor, source: torch.Tensor, target: torch.Tensor
+    residual: torch.Tensor, source_vector: torch.Tensor, target_vector: torch.Tensor
 ) -> torch.Tensor:
-    basis = torch.stack([source, target], dim=1)
-    coords = torch.linalg.pinv(basis) @ residual
-    swapped = coords.flip(0)
-    return basis @ (swapped - coords)
+    token_vectors = torch.stack([source_vector, target_vector], dim=1)
+
+    # find the source/target weights that best reconstruct the current state.
+    original_weights = torch.linalg.pinv(token_vectors) @ residual
+    swapped_weights = original_weights.flip(0)
+
+    # remove the original two-token mixture and add the swapped one.
+    swap_edit = token_vectors @ (swapped_weights - original_weights)
+    return swap_edit
 
 
 def _token_direction(
@@ -140,10 +151,12 @@ def _token_direction(
     if weight is not None:
         J = lens.jacobians[layer].to(device=residual.device, dtype=torch.float32)
         unembed = weight[int(token_id)].to(device=residual.device, dtype=torch.float32)
-        direction = J.T @ unembed
-        norm = direction.norm()
+        # token score after j-lens: unembed dot (j @ residual).
+        # equivalently: (j.t @ unembed) dot residual.
+        token_vector = J.T @ unembed
+        norm = token_vector.norm()
         if torch.isfinite(norm) and norm > 0:
-            return (direction / norm).detach()
+            return (token_vector / norm).detach()
 
     with torch.enable_grad():
         h = residual.detach().float().requires_grad_(True)

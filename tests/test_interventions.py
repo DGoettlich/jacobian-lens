@@ -83,9 +83,9 @@ def test_swap_delta_is_coordinate_replacement():
     source_id, target_id = 3, 9
 
     def swap_delta(layer, residual, scale):
-        source = _token_direction(model, lens, residual, layer, source_id)
-        target = _token_direction(model, lens, residual, layer, target_id)
-        return 0.5 * _swap_delta(residual, source, target)
+        source_vector = _token_direction(model, lens, residual, layer, source_id)
+        target_vector = _token_direction(model, lens, residual, layer, target_id)
+        return 0.5 * _swap_delta(residual, source_vector, target_vector)
 
     deltas = _deltas({1: activation}, [1], [-1], swap_delta)
 
