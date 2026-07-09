@@ -31,7 +31,7 @@ def page() -> str:
     .bad { color: #b42318; }
     .ok { color: #067647; }
     #status { min-height: 20px; margin-top: 10px; }
-    .panel { margin-top: 18px; padding-top: 16px; border-top: 1px solid #d0d7de; }
+    .panel { margin-top: 18px; padding: 16px 0 0; border-top: 1px solid #d0d7de; }
     .panel h2 { margin: 0 0 10px; font-size: 18px; }
     .hint { color: #57606a; margin: -4px 0 12px; max-width: 860px; }
     input.small { width: 72px; }
@@ -50,48 +50,57 @@ def page() -> str:
 <body>
   <h1>J-lens UI</h1>
 
-  <div class="row">
-    <div class="field">
-      <label>Model</label>
-      <input id="model" value="uzh-echist-org/Ranke-4B-1913">
+  <div class="panel">
+    <h2>Serve Model</h2>
+    <div class="row">
+      <div class="field">
+        <label>Model</label>
+        <input id="model" value="uzh-echist-org/Ranke-4B-1913">
+      </div>
+      <div class="field">
+        <label>Architecture model / tokenizer</label>
+        <input id="architecture" value="">
+      </div>
     </div>
-    <div class="field">
-      <label>Architecture model / tokenizer</label>
-      <input id="architecture" value="">
+
+    <div class="row">
+      <div class="field">
+        <label>Lens repo</label>
+        <input id="lens-repo" value="history-llms/jlenses">
+      </div>
+      <div class="field">
+        <label>Lens file</label>
+        <input id="lens-file" value="Ranke-4B-1913.pt">
+      </div>
     </div>
+
+    <div class="row">
+      <button id="serve" class="primary">Serve</button>
+      <button id="stop" class="stop" disabled>Stop</button>
+    </div>
+
+    <div id="status"></div>
   </div>
 
-  <div class="row">
-    <div class="field">
-      <label>Lens repo</label>
-      <input id="lens-repo" value="history-llms/jlenses">
+  <div class="panel">
+    <h2>Report</h2>
+    <div class="row">
+      <div class="field">
+        <label>Question</label>
+        <textarea id="question">The capital of France is</textarea>
+      </div>
     </div>
-    <div class="field">
-      <label>Lens file</label>
-      <input id="lens-file" value="Ranke-4B-1913.pt">
+
+    <div id="choices"></div>
+
+    <div class="row">
+      <button id="add">+ choice</button>
+      <label class="focus">Focus <select id="active-choice"></select></label>
+      <button id="submit" disabled>Submit</button>
+      <button id="export" disabled>Export</button>
+      <button id="mode">Token IDs</button>
     </div>
   </div>
-
-  <div class="row">
-    <div class="field">
-      <label>Question</label>
-      <textarea id="question">The capital of France is</textarea>
-    </div>
-  </div>
-
-  <div id="choices"></div>
-
-  <div class="row">
-    <button id="add">+ choice</button>
-    <label class="focus">Focus <select id="active-choice"></select></label>
-    <button id="serve" class="primary">Serve</button>
-    <button id="stop" class="stop" disabled>Stop</button>
-    <button id="submit" disabled>Submit</button>
-    <button id="export" disabled>Export</button>
-    <button id="mode">Token IDs</button>
-  </div>
-
-  <div id="status"></div>
 
   <div class="panel">
     <h2>Generate With Intervention</h2>
