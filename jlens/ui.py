@@ -34,18 +34,14 @@ def page() -> str:
     .panel { margin-top: 18px; padding-top: 16px; border-top: 1px solid #d0d7de; }
     .panel h2 { margin: 0 0 10px; font-size: 18px; }
     input.small { width: 72px; }
-    .prompt-tokens, .layer-row, .swap-result { margin: 10px 0; }
-    .layer-row { display: grid; grid-template-columns: 54px 1fr; gap: 10px; align-items: start; }
-    .layer-label { color: #57606a; padding-top: 5px; }
-    .token-chip { margin: 2px; padding: 4px 6px; border: 1px solid #d0d7de; border-radius: 6px; background: white; cursor: pointer; }
-    .token-chip:hover { border-color: #0969da; }
-    .token-chip.source { border-color: #cf222e; background: #ffebe9; }
-    .token-chip.target { border-color: #0969da; background: #ddf4ff; }
-    .token-score { color: #57606a; font-size: 12px; margin-left: 4px; }
-    .picked { font-weight: 600; min-width: 180px; }
+    .intervention-row { display: grid; grid-template-columns: 180px 1fr; gap: 12px; align-items: start; margin: 10px 0; }
+    .intervention-row input { width: 170px; }
+    .token-check { line-height: 1.9; min-height: 38px; }
     .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; max-width: 900px; }
     .result-col h3 { margin: 8px 0; font-size: 15px; }
-    .result-token { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid #d8dee4; padding: 4px 0; }
+    .generated { white-space: pre-wrap; border: 1px solid #d0d7de; border-radius: 6px; padding: 10px; min-height: 70px; }
+    .generated-token { margin: 2px; padding: 3px 5px; border-radius: 4px; display: inline-block; background: #ddf4ff; }
+    .muted { color: #57606a; }
     iframe { width: 100%; height: 860px; border: 1px solid #d0d7de; margin-top: 18px; }
   </style>
 </head>
@@ -96,21 +92,22 @@ def page() -> str:
   <div id="status"></div>
 
   <div class="panel">
-    <h2>Distribution / Swap</h2>
+    <h2>Generate With Intervention</h2>
+    <div class="intervention-row">
+      <label>Source token <input id="source" value="Paris"></label>
+      <div id="source-check" class="token-check"></div>
+    </div>
+    <div class="intervention-row">
+      <label>Target token <input id="target" value="London"></label>
+      <div id="target-check" class="token-check"></div>
+    </div>
     <div class="row">
-      <label>Top K <input id="top-k" class="small" type="number" value="10" min="1" max="50"></label>
-      <button id="distribution" disabled>Load distribution</button>
-      <label>Layer <select id="swap-layer"></select></label>
       <label>Strength <input id="strength" class="small" type="number" value="1" min="0" step="0.1"></label>
+      <label>Max tokens <input id="max-tokens" class="small" type="number" value="16" min="1" max="64"></label>
       <button id="swap" disabled>Swap</button>
-      <button id="clear-swap" disabled>Clear</button>
+      <button id="steer" disabled>Steer</button>
     </div>
-    <div class="row">
-      <div class="picked">Source: <span id="source-token">none</span></div>
-      <div class="picked">Target: <span id="target-token">none</span></div>
-    </div>
-    <div id="distribution-view"></div>
-    <div id="swap-view"></div>
+    <div id="generation-view"></div>
   </div>
 
   <iframe id="report"></iframe>
@@ -119,7 +116,7 @@ def page() -> str:
 let tokenMode = "text";
 let lastHtml = null;
 let tokenTimer = null;
-let swapPick = {source: null, target: null, layer: null};
+let interventionTimer = null;
 
 function esc(s) {
   return String(s)
@@ -151,10 +148,6 @@ function fullBody() {
     choices: choices(),
     active_choice: document.querySelector("#active-choice").value || null,
   };
-}
-
-function topK() {
-  return Number(document.querySelector("#top-k").value || 10);
 }
 
 function choiceRow(value) {
@@ -201,6 +194,10 @@ async function post(path, body) {
 }
 
 function paint(row, data) {
+  row.querySelector(".tokens").innerHTML = tokenizationHtml(data);
+}
+
+function tokenizationHtml(data) {
   const spans = data.spans.map((t, i) => {
     const text = tokenMode === "ids" ? t.id : esc(t.text);
     const answer = t.answer ? "answer" : "";
@@ -209,7 +206,7 @@ function paint(row, data) {
   const status = data.single_token
     ? `<span class="ok">single answer token: ${data.answer_ids[0]}</span>`
     : `<span class="bad">answer tokens: [${data.answer_ids.join(", ")}]</span>`;
-  row.querySelector(".tokens").innerHTML = `${spans}<br>${status}`;
+  return `${spans}<br>${status}`;
 }
 
 async function tokenize() {
@@ -223,6 +220,7 @@ async function tokenize() {
 function scheduleTokenize() {
   clearTimeout(tokenTimer);
   tokenTimer = setTimeout(tokenize, 250);
+  scheduleInterventionCheck();
 }
 
 document.querySelector("#add").onclick = () => {
@@ -237,7 +235,8 @@ document.querySelector("#serve").onclick = async () => {
     document.querySelector("#serve").disabled = true;
     document.querySelector("#stop").disabled = false;
     document.querySelector("#submit").disabled = false;
-    document.querySelector("#distribution").disabled = false;
+    document.querySelector("#swap").disabled = false;
+    document.querySelector("#steer").disabled = false;
     document.querySelector("#status").textContent = "Ready";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
@@ -250,134 +249,81 @@ document.querySelector("#stop").onclick = async () => {
     document.querySelector("#serve").disabled = false;
     document.querySelector("#stop").disabled = true;
     document.querySelector("#submit").disabled = true;
-    document.querySelector("#distribution").disabled = true;
     document.querySelector("#swap").disabled = true;
+    document.querySelector("#steer").disabled = true;
     document.querySelector("#status").textContent = "Stopped";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
   }
 };
 
-function tokenLabel(token) {
-  return `${token.text} (${token.id})`;
-}
-
-function updateSwapControls() {
-  document.querySelector("#source-token").textContent = swapPick.source ? tokenLabel(swapPick.source) : "none";
-  document.querySelector("#target-token").textContent = swapPick.target ? tokenLabel(swapPick.target) : "none";
-  document.querySelector("#clear-swap").disabled = !swapPick.source && !swapPick.target;
-  document.querySelector("#swap").disabled = !(swapPick.source && swapPick.target && document.querySelector("#swap-layer").value);
-}
-
-function pickSwapToken(token, layer) {
-  if (!swapPick.source || swapPick.target) {
-    swapPick = {source: token, target: null, layer};
-    document.querySelector("#swap-layer").value = layer;
-  } else {
-    swapPick.target = token;
+async function checkInterventionTokens() {
+  const source = document.querySelector("#source").value.trim();
+  const target = document.querySelector("#target").value.trim();
+  const terms = [];
+  const slots = [];
+  document.querySelector("#source-check").innerHTML = "";
+  document.querySelector("#target-check").innerHTML = "";
+  if (source) {
+    terms.push(source);
+    slots.push(document.querySelector("#source-check"));
   }
-  paintPickedTokens();
-  updateSwapControls();
-}
+  if (target) {
+    terms.push(target);
+    slots.push(document.querySelector("#target-check"));
+  }
+  if (!terms.length) return;
 
-function paintPickedTokens() {
-  document.querySelectorAll(".token-chip").forEach(button => {
-    button.classList.toggle("source", swapPick.source && Number(button.dataset.id) === swapPick.source.id);
-    button.classList.toggle("target", swapPick.target && Number(button.dataset.id) === swapPick.target.id);
+  const data = await post("/api/tokenize", {...fullBody(), choices: terms});
+  data.rows.forEach((row, i) => {
+    slots[i].innerHTML = tokenizationHtml(row);
   });
 }
 
-function tokenButton(token, layer) {
-  return `<button class="token-chip" data-id="${token.id}" data-text="${esc(token.text)}" data-layer="${layer}">
-    ${esc(token.text)} <span class="token-score">${token.id} · ${token.score.toFixed(2)}</span>
-  </button>`;
+function scheduleInterventionCheck() {
+  clearTimeout(interventionTimer);
+  interventionTimer = setTimeout(checkInterventionTokens, 250);
 }
 
-function renderDistribution(data) {
-  const layers = data.layers.map(row => row.layer);
-  document.querySelector("#swap-layer").innerHTML = layers.map(layer => `<option value="${layer}">${layer}</option>`).join("");
-  if (swapPick.layer && layers.includes(swapPick.layer)) {
-    document.querySelector("#swap-layer").value = swapPick.layer;
-  }
-
-  const prompt = data.prompt_tokens
-    .map((token, i) => `<span class="tok a${i % 5}">${esc(token.text)}</span>`)
-    .join("");
-  const layerRows = data.layers.map(row => `
-    <div class="layer-row">
-      <div class="layer-label">L${row.layer}</div>
-      <div>${row.tokens.map(token => tokenButton(token, row.layer)).join("")}</div>
-    </div>
-  `).join("");
-
-  document.querySelector("#distribution-view").innerHTML = `
-    <div class="prompt-tokens">${prompt}</div>
-    ${layerRows}
-  `;
-  document.querySelectorAll(".token-chip").forEach(button => {
-    button.onclick = () => pickSwapToken(
-      {id: Number(button.dataset.id), text: button.dataset.text},
-      Number(button.dataset.layer),
-    );
-  });
-  paintPickedTokens();
-  updateSwapControls();
-}
-
-function renderSwapResult(data) {
-  function col(title, rows) {
+function renderGeneration(data, label) {
+  function col(title, generated) {
     return `<div class="result-col">
       <h3>${title}</h3>
-      ${rows.map(token => `
-        <div class="result-token">
-          <span>${esc(token.text)} <span class="token-score">${token.id}</span></span>
-          <span>${token.score.toFixed(2)}</span>
-        </div>
-      `).join("")}
+      <div class="generated">${generated.tokens.map(token => (
+        `<span class="generated-token" title="${token.id}">${esc(token.text)}</span>`
+      )).join("")}</div>
+      <div class="muted">${generated.tokens.map(token => token.id).join(" ")}</div>
     </div>`;
   }
-  document.querySelector("#swap-view").innerHTML = `
+  document.querySelector("#generation-view").innerHTML = `
+    <div class="muted">${label}; edited layers ${data.layers[0]}-${data.layers[data.layers.length - 1]}</div>
     <div class="result-grid">
       ${col("Baseline", data.baseline)}
-      ${col("Swapped", data.swapped)}
+      ${col("Intervened", data.intervened)}
     </div>
   `;
 }
 
-document.querySelector("#distribution").onclick = async () => {
-  document.querySelector("#status").textContent = "Reading layer distributions";
+async function generate(mode) {
+  document.querySelector("#status").textContent = mode === "swap" ? "Generating swap" : "Generating steer";
   try {
-    const data = await post("/api/distribution", {...fullBody(), top_k: topK()});
-    renderDistribution(data);
-    document.querySelector("#status").textContent = "Distribution loaded";
-  } catch (err) {
-    document.querySelector("#status").textContent = err.message;
-  }
-};
-
-document.querySelector("#swap").onclick = async () => {
-  document.querySelector("#status").textContent = "Running swap";
-  try {
-    const data = await post("/api/swap", {
+    const data = await post("/api/generate", {
       ...fullBody(),
-      source_token_id: swapPick.source.id,
-      target_token_id: swapPick.target.id,
-      layer: Number(document.querySelector("#swap-layer").value),
+      mode,
+      source: document.querySelector("#source").value.trim(),
+      target: document.querySelector("#target").value.trim(),
       strength: Number(document.querySelector("#strength").value || 1),
-      top_k: topK(),
+      max_tokens: Number(document.querySelector("#max-tokens").value || 16),
     });
-    renderSwapResult(data);
-    document.querySelector("#status").textContent = "Swap done";
+    renderGeneration(data, mode === "swap" ? "Swap" : "Steer");
+    document.querySelector("#status").textContent = "Done";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
   }
-};
+}
 
-document.querySelector("#clear-swap").onclick = () => {
-  swapPick = {source: null, target: null, layer: null};
-  paintPickedTokens();
-  updateSwapControls();
-};
+document.querySelector("#swap").onclick = () => generate("swap");
+document.querySelector("#steer").onclick = () => generate("steer");
 
 document.querySelector("#submit").onclick = async () => {
   document.querySelector("#status").textContent = "Running";
@@ -405,18 +351,20 @@ document.querySelector("#mode").onclick = () => {
   tokenMode = tokenMode === "text" ? "ids" : "text";
   document.querySelector("#mode").textContent = tokenMode === "text" ? "Token IDs" : "Text";
   tokenize();
+  checkInterventionTokens();
 };
 
 document.querySelector("#question").oninput = scheduleTokenize;
 document.querySelector("#model").onchange = scheduleTokenize;
 document.querySelector("#architecture").onchange = scheduleTokenize;
+document.querySelector("#source").oninput = scheduleInterventionCheck;
+document.querySelector("#target").oninput = scheduleInterventionCheck;
 
 ["Paris", "London", "Berlin"].forEach(x => {
   document.querySelector("#choices").appendChild(choiceRow(x));
 });
 updateFocusChoices();
 scheduleTokenize();
-updateSwapControls();
 </script>
 </body>
 </html>"""

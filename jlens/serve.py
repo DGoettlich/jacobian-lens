@@ -59,23 +59,6 @@ def tokenize_choices(tokenizer, question: str, choices: Sequence[str]) -> list[d
     return rows
 
 
-def top_tokens(tokenizer, logits, k: int) -> list[dict]:
-    values, ids = logits.float().topk(k)
-    rows = []
-    for value, token_id in zip(values.tolist(), ids.tolist(), strict=True):
-        rows.append(
-            {
-                "id": int(token_id),
-                "text": tokenizer.decode(
-                    [int(token_id)],
-                    clean_up_tokenization_spaces=False,
-                ),
-                "score": float(value),
-            }
-        )
-    return rows
-
-
 secret_name = os.environ.get("JLENS_HF_TOKEN_SECRET", "HLLM")
 
 image = (
@@ -197,65 +180,106 @@ class LensWorker:
         )
         return {"html": html, "tokens": token_rows}
 
-    @modal.method()
-    def distribution(self, question: str, top_k: int):
-        assert self.model is not None
-        assert self.tokenizer is not None
-        assert self.lens is not None
-
-        lens_logits, _, input_ids = self.lens.apply(
+    def next_token(self, text: str) -> int:
+        _, model_logits, _ = self.lens.apply(
             self.model,
-            question,
+            text,
+            layers=[self.lens.source_layers[0]],
             positions=[-1],
         )
-        tokens = [
-            {
-                "id": int(token_id),
-                "text": self.tokenizer.decode(
-                    [int(token_id)],
-                    clean_up_tokenization_spaces=False,
-                ),
-            }
-            for token_id in input_ids[0].tolist()
-        ]
+        return int(model_logits[0].argmax().item())
+
+    def decode_token(self, token_id: int) -> str:
+        return self.tokenizer.decode(
+            [int(token_id)],
+            clean_up_tokenization_spaces=False,
+        )
+
+    def intervention_layers(self) -> list[int]:
+        layer_start = int(0.18 * self.model.n_layers)
+        layer_stop = int(0.63 * self.model.n_layers)
         layers = [
-            {
-                "layer": int(layer),
-                "tokens": top_tokens(self.tokenizer, logits_by_pos[0], top_k),
-            }
-            for layer, logits_by_pos in sorted(lens_logits.items())
+            layer
+            for layer in self.lens.source_layers
+            if layer_start <= layer <= layer_stop
+        ]
+        return layers or self.lens.source_layers
+
+    def generated(self, token_ids: list[int]) -> dict:
+        pieces = [
+            {"id": int(token_id), "text": self.decode_token(token_id)}
+            for token_id in token_ids
         ]
         return {
-            "prompt_tokens": tokens,
-            "layers": layers,
+            "continuation": "".join(piece["text"] for piece in pieces),
+            "tokens": pieces,
         }
 
     @modal.method()
-    def swap_tokens(
+    def generate(
         self,
         question: str,
-        source_token_id: int,
-        target_token_id: int,
-        layer: int,
+        mode: str,
+        source: str,
+        target: str,
         strength: float,
-        top_k: int,
+        max_tokens: int,
     ):
         assert self.model is not None
         assert self.tokenizer is not None
         assert self.lens is not None
+        assert mode in {"swap", "steer"}
 
-        result = self.lens.swap(
-            self.model,
-            question,
-            int(source_token_id),
-            int(target_token_id),
-            strength=float(strength),
-            layers=[int(layer)],
-            positions=[-1],
-        )
+        choices = [source] if mode == "steer" else [source, target]
+        token_rows = tokenize_choices(self.tokenizer, question, choices)
+        assert token_rows[0]["single_token"], "source must be one token in context"
+        source_id = int(token_rows[0]["answer_ids"][0])
+        target_id = None
+        if mode == "swap":
+            assert token_rows[1]["single_token"], "target must be one token in context"
+            target_id = int(token_rows[1]["answer_ids"][0])
+
+        max_tokens = max(1, min(int(max_tokens), 64))
+        layers = self.intervention_layers()
+
+        baseline_text = question
+        intervened_text = question
+        baseline_ids = []
+        intervened_ids = []
+        for _ in range(max_tokens):
+            baseline_id = self.next_token(baseline_text)
+            baseline_ids.append(baseline_id)
+            baseline_text += self.decode_token(baseline_id)
+
+            if mode == "steer":
+                result = self.lens.steer(
+                    self.model,
+                    intervened_text,
+                    source_id,
+                    float(strength),
+                    layers=layers,
+                    positions=[-1],
+                )
+            else:
+                assert target_id is not None
+                result = self.lens.swap(
+                    self.model,
+                    intervened_text,
+                    source_id,
+                    target_id,
+                    strength=float(strength),
+                    layers=layers,
+                    positions=[-1],
+                )
+            intervened_id = int(result.intervened_logits[-1].argmax().item())
+            intervened_ids.append(intervened_id)
+            intervened_text += self.decode_token(intervened_id)
+
         return {
-            "baseline": top_tokens(self.tokenizer, result.baseline_logits[-1], top_k),
-            "swapped": top_tokens(self.tokenizer, result.intervened_logits[-1], top_k),
+            "tokens": token_rows,
+            "layers": layers,
+            "baseline": self.generated(baseline_ids),
+            "intervened": self.generated(intervened_ids),
         }
 
 
@@ -313,28 +337,17 @@ async def run(request: Request):
     )
 
 
-@api.post("/api/distribution")
-async def distribution(request: Request):
+@api.post("/api/generate")
+async def generate(request: Request):
     body = await request.json()
     return JSONResponse(
-        await worker(body).distribution.remote.aio(
+        await worker(body).generate.remote.aio(
             body["question"],
-            int(body.get("top_k", 10)),
-        )
-    )
-
-
-@api.post("/api/swap")
-async def swap(request: Request):
-    body = await request.json()
-    return JSONResponse(
-        await worker(body).swap_tokens.remote.aio(
-            body["question"],
-            int(body["source_token_id"]),
-            int(body["target_token_id"]),
-            int(body["layer"]),
+            body["mode"],
+            body["source"],
+            body.get("target", ""),
             float(body.get("strength", 1.0)),
-            int(body.get("top_k", 10)),
+            int(body.get("max_tokens", 16)),
         )
     )
 
