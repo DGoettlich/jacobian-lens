@@ -59,6 +59,23 @@ def tokenize_choices(tokenizer, question: str, choices: Sequence[str]) -> list[d
     return rows
 
 
+def top_tokens(tokenizer, logits, k: int) -> list[dict]:
+    values, ids = logits.float().topk(k)
+    rows = []
+    for value, token_id in zip(values.tolist(), ids.tolist(), strict=True):
+        rows.append(
+            {
+                "id": int(token_id),
+                "text": tokenizer.decode(
+                    [int(token_id)],
+                    clean_up_tokenization_spaces=False,
+                ),
+                "score": float(value),
+            }
+        )
+    return rows
+
+
 secret_name = os.environ.get("JLENS_HF_TOKEN_SECRET", "HLLM")
 
 image = (
@@ -180,6 +197,67 @@ class LensWorker:
         )
         return {"html": html, "tokens": token_rows}
 
+    @modal.method()
+    def distribution(self, question: str, top_k: int):
+        assert self.model is not None
+        assert self.tokenizer is not None
+        assert self.lens is not None
+
+        lens_logits, _, input_ids = self.lens.apply(
+            self.model,
+            question,
+            positions=[-1],
+        )
+        tokens = [
+            {
+                "id": int(token_id),
+                "text": self.tokenizer.decode(
+                    [int(token_id)],
+                    clean_up_tokenization_spaces=False,
+                ),
+            }
+            for token_id in input_ids[0].tolist()
+        ]
+        layers = [
+            {
+                "layer": int(layer),
+                "tokens": top_tokens(self.tokenizer, logits_by_pos[0], top_k),
+            }
+            for layer, logits_by_pos in sorted(lens_logits.items())
+        ]
+        return {
+            "prompt_tokens": tokens,
+            "layers": layers,
+        }
+
+    @modal.method()
+    def swap_tokens(
+        self,
+        question: str,
+        source_token_id: int,
+        target_token_id: int,
+        layer: int,
+        strength: float,
+        top_k: int,
+    ):
+        assert self.model is not None
+        assert self.tokenizer is not None
+        assert self.lens is not None
+
+        result = self.lens.swap(
+            self.model,
+            question,
+            int(source_token_id),
+            int(target_token_id),
+            strength=float(strength),
+            layers=[int(layer)],
+            positions=[-1],
+        )
+        return {
+            "baseline": top_tokens(self.tokenizer, result.baseline_logits[-1], top_k),
+            "swapped": top_tokens(self.tokenizer, result.intervened_logits[-1], top_k),
+        }
+
 
 def worker(body: dict):
     return LensWorker(
@@ -231,6 +309,32 @@ async def run(request: Request):
             body["question"],
             body["choices"],
             body.get("active_choice"),
+        )
+    )
+
+
+@api.post("/api/distribution")
+async def distribution(request: Request):
+    body = await request.json()
+    return JSONResponse(
+        await worker(body).distribution.remote.aio(
+            body["question"],
+            int(body.get("top_k", 10)),
+        )
+    )
+
+
+@api.post("/api/swap")
+async def swap(request: Request):
+    body = await request.json()
+    return JSONResponse(
+        await worker(body).swap_tokens.remote.aio(
+            body["question"],
+            int(body["source_token_id"]),
+            int(body["target_token_id"]),
+            int(body["layer"]),
+            float(body.get("strength", 1.0)),
+            int(body.get("top_k", 10)),
         )
     )
 

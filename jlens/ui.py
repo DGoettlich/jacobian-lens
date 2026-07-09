@@ -31,6 +31,21 @@ def page() -> str:
     .bad { color: #b42318; }
     .ok { color: #067647; }
     #status { min-height: 20px; margin-top: 10px; }
+    .panel { margin-top: 18px; padding-top: 16px; border-top: 1px solid #d0d7de; }
+    .panel h2 { margin: 0 0 10px; font-size: 18px; }
+    input.small { width: 72px; }
+    .prompt-tokens, .layer-row, .swap-result { margin: 10px 0; }
+    .layer-row { display: grid; grid-template-columns: 54px 1fr; gap: 10px; align-items: start; }
+    .layer-label { color: #57606a; padding-top: 5px; }
+    .token-chip { margin: 2px; padding: 4px 6px; border: 1px solid #d0d7de; border-radius: 6px; background: white; cursor: pointer; }
+    .token-chip:hover { border-color: #0969da; }
+    .token-chip.source { border-color: #cf222e; background: #ffebe9; }
+    .token-chip.target { border-color: #0969da; background: #ddf4ff; }
+    .token-score { color: #57606a; font-size: 12px; margin-left: 4px; }
+    .picked { font-weight: 600; min-width: 180px; }
+    .result-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; max-width: 900px; }
+    .result-col h3 { margin: 8px 0; font-size: 15px; }
+    .result-token { display: flex; justify-content: space-between; gap: 10px; border-bottom: 1px solid #d8dee4; padding: 4px 0; }
     iframe { width: 100%; height: 860px; border: 1px solid #d0d7de; margin-top: 18px; }
   </style>
 </head>
@@ -79,15 +94,39 @@ def page() -> str:
   </div>
 
   <div id="status"></div>
+
+  <div class="panel">
+    <h2>Distribution / Swap</h2>
+    <div class="row">
+      <label>Top K <input id="top-k" class="small" type="number" value="10" min="1" max="50"></label>
+      <button id="distribution" disabled>Load distribution</button>
+      <label>Layer <select id="swap-layer"></select></label>
+      <label>Strength <input id="strength" class="small" type="number" value="1" min="0" step="0.1"></label>
+      <button id="swap" disabled>Swap</button>
+      <button id="clear-swap" disabled>Clear</button>
+    </div>
+    <div class="row">
+      <div class="picked">Source: <span id="source-token">none</span></div>
+      <div class="picked">Target: <span id="target-token">none</span></div>
+    </div>
+    <div id="distribution-view"></div>
+    <div id="swap-view"></div>
+  </div>
+
   <iframe id="report"></iframe>
 
 <script>
 let tokenMode = "text";
 let lastHtml = null;
 let tokenTimer = null;
+let swapPick = {source: null, target: null, layer: null};
 
 function esc(s) {
-  return String(s).replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;");
+  return String(s)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 function baseBody() {
@@ -112,6 +151,10 @@ function fullBody() {
     choices: choices(),
     active_choice: document.querySelector("#active-choice").value || null,
   };
+}
+
+function topK() {
+  return Number(document.querySelector("#top-k").value || 10);
 }
 
 function choiceRow(value) {
@@ -194,6 +237,7 @@ document.querySelector("#serve").onclick = async () => {
     document.querySelector("#serve").disabled = true;
     document.querySelector("#stop").disabled = false;
     document.querySelector("#submit").disabled = false;
+    document.querySelector("#distribution").disabled = false;
     document.querySelector("#status").textContent = "Ready";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
@@ -206,10 +250,133 @@ document.querySelector("#stop").onclick = async () => {
     document.querySelector("#serve").disabled = false;
     document.querySelector("#stop").disabled = true;
     document.querySelector("#submit").disabled = true;
+    document.querySelector("#distribution").disabled = true;
+    document.querySelector("#swap").disabled = true;
     document.querySelector("#status").textContent = "Stopped";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
   }
+};
+
+function tokenLabel(token) {
+  return `${token.text} (${token.id})`;
+}
+
+function updateSwapControls() {
+  document.querySelector("#source-token").textContent = swapPick.source ? tokenLabel(swapPick.source) : "none";
+  document.querySelector("#target-token").textContent = swapPick.target ? tokenLabel(swapPick.target) : "none";
+  document.querySelector("#clear-swap").disabled = !swapPick.source && !swapPick.target;
+  document.querySelector("#swap").disabled = !(swapPick.source && swapPick.target && document.querySelector("#swap-layer").value);
+}
+
+function pickSwapToken(token, layer) {
+  if (!swapPick.source || swapPick.target) {
+    swapPick = {source: token, target: null, layer};
+    document.querySelector("#swap-layer").value = layer;
+  } else {
+    swapPick.target = token;
+  }
+  paintPickedTokens();
+  updateSwapControls();
+}
+
+function paintPickedTokens() {
+  document.querySelectorAll(".token-chip").forEach(button => {
+    button.classList.toggle("source", swapPick.source && Number(button.dataset.id) === swapPick.source.id);
+    button.classList.toggle("target", swapPick.target && Number(button.dataset.id) === swapPick.target.id);
+  });
+}
+
+function tokenButton(token, layer) {
+  return `<button class="token-chip" data-id="${token.id}" data-text="${esc(token.text)}" data-layer="${layer}">
+    ${esc(token.text)} <span class="token-score">${token.id} · ${token.score.toFixed(2)}</span>
+  </button>`;
+}
+
+function renderDistribution(data) {
+  const layers = data.layers.map(row => row.layer);
+  document.querySelector("#swap-layer").innerHTML = layers.map(layer => `<option value="${layer}">${layer}</option>`).join("");
+  if (swapPick.layer && layers.includes(swapPick.layer)) {
+    document.querySelector("#swap-layer").value = swapPick.layer;
+  }
+
+  const prompt = data.prompt_tokens
+    .map((token, i) => `<span class="tok a${i % 5}">${esc(token.text)}</span>`)
+    .join("");
+  const layerRows = data.layers.map(row => `
+    <div class="layer-row">
+      <div class="layer-label">L${row.layer}</div>
+      <div>${row.tokens.map(token => tokenButton(token, row.layer)).join("")}</div>
+    </div>
+  `).join("");
+
+  document.querySelector("#distribution-view").innerHTML = `
+    <div class="prompt-tokens">${prompt}</div>
+    ${layerRows}
+  `;
+  document.querySelectorAll(".token-chip").forEach(button => {
+    button.onclick = () => pickSwapToken(
+      {id: Number(button.dataset.id), text: button.dataset.text},
+      Number(button.dataset.layer),
+    );
+  });
+  paintPickedTokens();
+  updateSwapControls();
+}
+
+function renderSwapResult(data) {
+  function col(title, rows) {
+    return `<div class="result-col">
+      <h3>${title}</h3>
+      ${rows.map(token => `
+        <div class="result-token">
+          <span>${esc(token.text)} <span class="token-score">${token.id}</span></span>
+          <span>${token.score.toFixed(2)}</span>
+        </div>
+      `).join("")}
+    </div>`;
+  }
+  document.querySelector("#swap-view").innerHTML = `
+    <div class="result-grid">
+      ${col("Baseline", data.baseline)}
+      ${col("Swapped", data.swapped)}
+    </div>
+  `;
+}
+
+document.querySelector("#distribution").onclick = async () => {
+  document.querySelector("#status").textContent = "Reading layer distributions";
+  try {
+    const data = await post("/api/distribution", {...fullBody(), top_k: topK()});
+    renderDistribution(data);
+    document.querySelector("#status").textContent = "Distribution loaded";
+  } catch (err) {
+    document.querySelector("#status").textContent = err.message;
+  }
+};
+
+document.querySelector("#swap").onclick = async () => {
+  document.querySelector("#status").textContent = "Running swap";
+  try {
+    const data = await post("/api/swap", {
+      ...fullBody(),
+      source_token_id: swapPick.source.id,
+      target_token_id: swapPick.target.id,
+      layer: Number(document.querySelector("#swap-layer").value),
+      strength: Number(document.querySelector("#strength").value || 1),
+      top_k: topK(),
+    });
+    renderSwapResult(data);
+    document.querySelector("#status").textContent = "Swap done";
+  } catch (err) {
+    document.querySelector("#status").textContent = err.message;
+  }
+};
+
+document.querySelector("#clear-swap").onclick = () => {
+  swapPick = {source: null, target: null, layer: null};
+  paintPickedTokens();
+  updateSwapControls();
 };
 
 document.querySelector("#submit").onclick = async () => {
@@ -249,6 +416,7 @@ document.querySelector("#architecture").onchange = scheduleTokenize;
 });
 updateFocusChoices();
 scheduleTokenize();
+updateSwapControls();
 </script>
 </body>
 </html>"""
