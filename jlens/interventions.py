@@ -81,21 +81,22 @@ class Swap:
 Intervention = Steer | Swap
 
 
-@dataclass(frozen=True)
-class InterventionResult:
-    """Baseline and intervened logits for the same prompt."""
-
-    input_ids: torch.Tensor
-    baseline_logits: torch.Tensor
-    intervened_logits: torch.Tensor
-
-
 class _ActivationEditor:
-    """Forward-hook context manager that adds precomputed residual deltas."""
+    """Forward-hook context manager that edits the live residual stream."""
 
-    def __init__(self, blocks: Sequence[nn.Module], deltas: dict[int, torch.Tensor]):
+    def __init__(
+        self,
+        blocks: Sequence[nn.Module],
+        model: LensModel,
+        lens: JacobianLens,
+        intervention: Intervention,
+        layers: Sequence[int],
+    ):
         self._blocks = blocks
-        self._deltas = deltas
+        self._model = model
+        self._lens = lens
+        self._intervention = intervention
+        self._layers = layers
         self._handles: list[torch.utils.hooks.RemovableHandle] = []
 
     def _make_hook(self, layer: int) -> Callable[..., torch.Tensor | tuple]:
@@ -105,15 +106,31 @@ class _ActivationEditor:
                 raise ValueError("interventions require batch size 1")
 
             edited = hidden.clone()
-            delta = self._deltas[layer].to(device=hidden.device, dtype=hidden.dtype)
-            edited[0] = edited[0] + delta
+            residuals = hidden[0].float()
+            scale = residuals.norm(dim=-1).mean().clamp_min(1e-6)
+
+            for pos in _token_positions_to_edit(
+                self._intervention.positions, hidden.shape[1]
+            ):
+                delta = self._intervention.delta(
+                    self._model,
+                    self._lens,
+                    layer,
+                    residuals[pos],
+                    scale,
+                )
+                edited[0, pos] = edited[0, pos] + delta.to(
+                    device=edited.device,
+                    dtype=edited.dtype,
+                )
+
             return edited if torch.is_tensor(output) else (edited, *output[1:])
 
         return hook
 
     def __enter__(self) -> _ActivationEditor:
         try:
-            for layer in sorted(self._deltas):
+            for layer in sorted(self._layers):
                 self._handles.append(
                     self._blocks[layer].register_forward_hook(self._make_hook(layer))
                 )
@@ -140,8 +157,8 @@ def steer(
     layers: Sequence[int] | None = None,
     positions: Sequence[int] | None = None,
     max_seq_len: int = 512,
-) -> InterventionResult:
-    """Run ``prompt`` while adding a J-lens direction for ``token_id``."""
+) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
+    """Run ``prompt`` with a J-lens direction added to selected residuals."""
     intervention = Steer(token_id, strength, layers, positions)
     return _run(model, lens, prompt, intervention, max_seq_len)
 
@@ -157,7 +174,7 @@ def swap(
     layers: Sequence[int] | None = None,
     positions: Sequence[int] | None = None,
     max_seq_len: int = 512,
-) -> InterventionResult:
+) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
     """Run ``prompt`` while swapping two J-lens coordinates.
 
     At each edited residual ``h``, form ``V = [v_source, v_target]``, compute
@@ -224,53 +241,33 @@ def _run(
     prompt: str,
     intervention: Intervention,
     max_seq_len: int,
-) -> InterventionResult:
+) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
     edit_layers = _layers(model, lens, intervention.layers)
     input_ids = model.encode(prompt, max_length=max_seq_len)
     if input_ids.shape[0] != 1:
         raise ValueError("interventions require batch size 1")
 
     final_layer = model.n_layers - 1
-    with torch.no_grad(), ActivationRecorder(
+    with torch.no_grad(), _ActivationEditor(
+        model.layers,
+        model,
+        lens,
+        intervention,
+        edit_layers,
+    ), ActivationRecorder(
         model.layers, at=sorted({*edit_layers, final_layer})
     ) as recorder:
         model.forward(input_ids)
         activations = {layer: act.detach() for layer, act in recorder.activations.items()}
 
-    baseline = model.unembed(activations[final_layer][0].float()).float().cpu()
-
-    def delta_fn(layer: int, residual: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
-        return intervention.delta(model, lens, layer, residual, scale)
-
-    deltas = _deltas(activations, edit_layers, intervention.positions, delta_fn)
-
-    with torch.no_grad(), _ActivationEditor(model.layers, deltas), ActivationRecorder(
-        model.layers, at=[final_layer]
-    ) as recorder:
-        model.forward(input_ids)
-        final_residual = recorder.activations[final_layer][0].detach().float()
-
-    intervened = model.unembed(final_residual).float().cpu()
-    return InterventionResult(input_ids, baseline, intervened)
-
-
-def _deltas(
-    activations: dict[int, torch.Tensor],
-    layers: Sequence[int],
-    positions: Sequence[int] | None,
-    delta_fn: Callable[[int, torch.Tensor, torch.Tensor], torch.Tensor],
-) -> dict[int, torch.Tensor]:
-    seq_len = next(iter(activations.values())).shape[1]
-    pos_list = _token_positions_to_edit(positions, seq_len)
-    deltas = {layer: torch.zeros_like(activations[layer][0].float()) for layer in layers}
-
-    for layer in layers:
-        residuals = activations[layer][0].float()
-        scale = residuals.norm(dim=-1).mean().clamp_min(1e-6)
-        for pos in pos_list:
-            deltas[layer][pos] += delta_fn(layer, residuals[pos], scale)
-
-    return deltas
+    lens_logits, model_logits = lens._readout_activations(
+        model,
+        activations,
+        edit_layers,
+        intervention.positions,
+        use_jacobian=True,
+    )
+    return lens_logits, model_logits, input_ids
 
 
 def _layers(

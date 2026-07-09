@@ -12,15 +12,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
-from typing import TYPE_CHECKING
 
 import torch
 
 from jlens.hooks import ActivationRecorder
 from jlens.protocol import LensModel
-
-if TYPE_CHECKING:
-    from jlens.interventions import InterventionResult
 
 
 class JacobianLens:
@@ -156,12 +152,13 @@ class JacobianLens:
         layers: Sequence[int] | None = None,
         positions: Sequence[int] | None = None,
         max_seq_len: int = 512,
-    ) -> InterventionResult:
+    ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
         """Run ``prompt`` while adding a J-lens direction for ``token_id``.
 
         Positive ``strength`` makes the token direction more prominent;
-        negative ``strength`` suppresses it. The returned logits are the
-        model's ordinary output and the output after the intervention.
+        negative ``strength`` suppresses it. Returns the same
+        ``(lens_logits, model_logits, input_ids)`` tuple as :meth:`apply`,
+        computed from the intervened forward pass.
         """
         from jlens.interventions import steer
 
@@ -187,11 +184,13 @@ class JacobianLens:
         layers: Sequence[int] | None = None,
         positions: Sequence[int] | None = None,
         max_seq_len: int = 512,
-    ) -> InterventionResult:
+    ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
         """Run ``prompt`` while swapping one J-lens token direction for another.
 
         ``strength=1`` swaps the source/target coordinates in their two-vector
         span; smaller values make the swap partial, larger values over-apply it.
+        Returns the same ``(lens_logits, model_logits, input_ids)`` tuple as
+        :meth:`apply`, computed from the intervened forward pass.
         """
         from jlens.interventions import swap
 
@@ -265,6 +264,26 @@ class JacobianLens:
             model.forward(input_ids)
             activations = {i: recorder.activations[i].detach() for i in record_at}
 
+        lens_logits, model_logits = self._readout_activations(
+            model,
+            activations,
+            layers,
+            positions,
+            use_jacobian=use_jacobian,
+        )
+        return lens_logits, model_logits, input_ids
+
+    def _readout_activations(
+        self,
+        model: LensModel,
+        activations: dict[int, torch.Tensor],
+        layers: Sequence[int],
+        positions: Sequence[int] | None,
+        *,
+        use_jacobian: bool,
+    ) -> tuple[dict[int, torch.Tensor], torch.Tensor]:
+        final_layer = model.n_layers - 1
+
         def select(layer: int) -> torch.Tensor:
             """Residuals at the requested positions: ``[n_positions, d_model]``."""
             full = activations[layer][0]  # [seq_len, d_model]
@@ -278,4 +297,4 @@ class JacobianLens:
             lens_logits[layer] = model.unembed(residual).float().cpu()
 
         model_logits = model.unembed(select(final_layer)).float().cpu()
-        return lens_logits, model_logits, input_ids
+        return lens_logits, model_logits

@@ -5,7 +5,7 @@ import torch
 
 from jlens.fitting import fit
 from jlens.hooks import ActivationRecorder
-from jlens.interventions import _deltas, _swap_delta, _token_direction
+from jlens.interventions import _swap_delta, _token_direction
 
 from .tiny import TinyDecoder
 
@@ -48,7 +48,14 @@ def test_token_direction_is_unit_transpose_row():
 def test_steer_zero_strength_leaves_logits_unchanged():
     model, lens = _model_and_lens()
 
-    result = lens.steer(
+    _, baseline_logits, _ = lens.apply(
+        model,
+        PROMPT,
+        layers=[1],
+        positions=[-1],
+        max_seq_len=64,
+    )
+    _, intervened_logits, _ = lens.steer(
         model,
         PROMPT,
         token_id=7,
@@ -58,13 +65,20 @@ def test_steer_zero_strength_leaves_logits_unchanged():
         max_seq_len=64,
     )
 
-    torch.testing.assert_close(result.intervened_logits, result.baseline_logits)
+    torch.testing.assert_close(intervened_logits, baseline_logits)
 
 
 def test_steer_changes_logits():
     model, lens = _model_and_lens()
 
-    result = lens.steer(
+    _, baseline_logits, _ = lens.apply(
+        model,
+        PROMPT,
+        layers=[1],
+        positions=[-1],
+        max_seq_len=64,
+    )
+    _, intervened_logits, _ = lens.steer(
         model,
         PROMPT,
         token_id=7,
@@ -74,26 +88,22 @@ def test_steer_changes_logits():
         max_seq_len=64,
     )
 
-    assert not torch.allclose(result.intervened_logits, result.baseline_logits)
+    assert not torch.allclose(intervened_logits, baseline_logits)
 
 
 def test_swap_delta_is_coordinate_replacement():
     model, lens = _model_and_lens()
-    input_ids, activation = _activation(model, layer=1)
+    _, activation = _activation(model, layer=1)
+    residual = activation[0, -1].float()
     source_id, target_id = 3, 9
 
-    def swap_delta(layer, residual, scale):
-        source_vector = _token_direction(model, lens, residual, layer, source_id)
-        target_vector = _token_direction(model, lens, residual, layer, target_id)
-        return 0.5 * _swap_delta(residual, source_vector, target_vector)
+    source_vector = _token_direction(model, lens, residual, 1, source_id)
+    target_vector = _token_direction(model, lens, residual, 1, target_id)
+    token_vectors = torch.stack([source_vector, target_vector], dim=1)
+    original_weights = torch.linalg.pinv(token_vectors) @ residual
+    expected = token_vectors @ (original_weights.flip(0) - original_weights)
 
-    deltas = _deltas({1: activation}, [1], [-1], swap_delta)
-
-    pos = input_ids.shape[1] - 1
-    expected = swap_delta(1, activation[0, pos].float(), torch.tensor(1.0))
-
-    torch.testing.assert_close(deltas[1][pos], expected)
-    torch.testing.assert_close(deltas[1][:pos], torch.zeros_like(deltas[1][:pos]))
+    torch.testing.assert_close(_swap_delta(residual, source_vector, target_vector), expected)
 
 
 def test_bad_layer_rejected():
