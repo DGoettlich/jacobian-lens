@@ -248,43 +248,24 @@ class LensWorker:
         mode: str,
         source: str,
         target: str,
+        steer_specs: list[dict],
         strength: float,
         layers_text: str,
         positions_text: str,
         cascading: bool,
     ):
-        import jlens
-
-        self.ensure_served()
-        assert mode in {"swap", "steer"}
-        probe_choices = [source] if mode == "steer" else [source, target]
-        probe_rows = tokenize_choices(self.tokenizer, question, probe_choices)
-        if not probe_rows[0]["single_token"]:
-            raise ValueError("source must be one token in context")
-        source_id = int(probe_rows[0]["answer_ids"][0])
-
-        layers = parse_indices(layers_text)
-        positions = parse_indices(positions_text)
-        if mode == "steer":
-            intervention = jlens.Steer(
-                [(source_id, float(strength), layers, positions)],
-                cascading=bool(cascading),
-            )
-            label = f"Steer {source}"
-        else:
-            if not probe_rows[1]["single_token"]:
-                raise ValueError("target must be one token in context")
-            target_id = int(probe_rows[1]["answer_ids"][0])
-            intervention = jlens.Swap(
-                source_id,
-                target_id,
-                strength=float(strength),
-                layers=layers,
-                positions=positions,
-                cascading=bool(cascading),
-            )
-            label = f"Swap {source} -> {target}"
-
+        intervention, label, probe_rows = self.build_intervention(
+            question,
+            mode,
+            source,
+            target,
+            steer_specs,
+            strength,
+            layers_text,
+            positions_text,
+            cascading,
+        )
+        probe_choices = [row["choice"] for row in probe_rows]
         report_choices = list(dict.fromkeys([*choices, *probe_choices]))
         result = self.render_report(
             question,
@@ -294,10 +275,71 @@ class LensWorker:
             label,
         )
         result["probe_tokens"] = probe_rows
-        result["layers"] = layers
-        result["positions"] = positions
-        result["cascading"] = bool(cascading)
         return result
+
+    def build_intervention(
+        self,
+        question: str,
+        mode: str,
+        source: str,
+        target: str,
+        steer_specs: list[dict],
+        strength: float,
+        layers_text: str,
+        positions_text: str,
+        cascading: bool,
+    ):
+        import jlens
+
+        self.ensure_served()
+        if mode == "steer":
+            if not steer_specs:
+                steer_specs = [
+                    {
+                        "token": source,
+                        "strength": strength,
+                        "layers": layers_text,
+                        "positions": positions_text,
+                    }
+                ]
+            probe_rows = tokenize_choices(
+                self.tokenizer,
+                question,
+                [spec["token"] for spec in steer_specs],
+            )
+            specs = []
+            for spec, row in zip(steer_specs, probe_rows, strict=True):
+                if not row["single_token"]:
+                    raise ValueError(f"{spec['token']} must be one token in context")
+                specs.append(
+                    (
+                        int(row["answer_ids"][0]),
+                        float(spec.get("strength", 1.0)),
+                        parse_indices(spec.get("layers", "")),
+                        parse_indices(spec.get("positions", "")),
+                    )
+                )
+            intervention = jlens.Steer(
+                specs,
+                cascading=bool(cascading),
+            )
+            label = f"Steer {', '.join(spec['token'] for spec in steer_specs)}"
+            return intervention, label, probe_rows
+
+        probe_rows = tokenize_choices(self.tokenizer, question, [source, target])
+        if not probe_rows[0]["single_token"]:
+            raise ValueError("source must be one token in context")
+        if not probe_rows[1]["single_token"]:
+            raise ValueError("target must be one token in context")
+        intervention = jlens.Swap(
+            int(probe_rows[0]["answer_ids"][0]),
+            int(probe_rows[1]["answer_ids"][0]),
+            strength=float(strength),
+            layers=parse_indices(layers_text),
+            positions=parse_indices(positions_text),
+            cascading=bool(cascading),
+        )
+        return intervention, f"Swap {source} -> {target}", probe_rows
 
     def next_token_logits(self, input_ids, intervention):
         import torch
@@ -380,17 +422,6 @@ class LensWorker:
                 generated_ids,
                 clean_up_tokenization_spaces=False,
             ),
-            "token_ids": generated_ids,
-            "tokens": [
-                {
-                    "id": token_id,
-                    "text": self.tokenizer.decode(
-                        [token_id],
-                        clean_up_tokenization_spaces=False,
-                    ),
-                }
-                for token_id in generated_ids
-            ],
         }
 
     @modal.method()
@@ -408,8 +439,6 @@ class LensWorker:
         max_tokens: int,
         chat_template: bool,
     ):
-        import jlens
-
         self.ensure_served()
         assert mode in {"baseline", "swap", "steer"}
         max_tokens = max(1, int(max_tokens))
@@ -417,52 +446,17 @@ class LensWorker:
         if mode == "baseline":
             return {"mode": mode, "baseline": baseline}
 
-        probe_question = generation_prompt_text(self.tokenizer, question, chat_template)
-        if mode == "steer":
-            if not steer_specs:
-                steer_specs = [
-                    {
-                        "token": source,
-                        "strength": strength,
-                        "layers": layers_text,
-                        "positions": positions_text,
-                    }
-                ]
-            probe_choices = [spec["token"] for spec in steer_specs]
-            probe_rows = tokenize_choices(self.tokenizer, probe_question, probe_choices)
-            specs = []
-            for spec, row in zip(steer_specs, probe_rows, strict=True):
-                if not row["single_token"]:
-                    raise ValueError(f"{spec['token']} must be one token in context")
-                specs.append(
-                    (
-                        int(row["answer_ids"][0]),
-                        float(spec.get("strength", 1.0)),
-                        parse_indices(spec.get("layers", "")),
-                        parse_indices(spec.get("positions", "")),
-                    )
-                )
-            intervention = jlens.Steer(
-                specs,
-                cascading=bool(cascading),
-            )
-        else:
-            probe_choices = [source, target]
-            probe_rows = tokenize_choices(self.tokenizer, probe_question, probe_choices)
-            if not probe_rows[0]["single_token"]:
-                raise ValueError("source must be one token in context")
-            if not probe_rows[1]["single_token"]:
-                raise ValueError("target must be one token in context")
-            source_id = int(probe_rows[0]["answer_ids"][0])
-            target_id = int(probe_rows[1]["answer_ids"][0])
-            intervention = jlens.Swap(
-                source_id,
-                target_id,
-                strength=float(strength),
-                layers=parse_indices(layers_text),
-                positions=parse_indices(positions_text),
-                cascading=bool(cascading),
-            )
+        intervention, _, probe_rows = self.build_intervention(
+            generation_prompt_text(self.tokenizer, question, chat_template),
+            mode,
+            source,
+            target,
+            steer_specs,
+            strength,
+            layers_text,
+            positions_text,
+            cascading,
+        )
 
         return {
             "mode": mode,
@@ -548,8 +542,9 @@ async def intervene(request: Request):
             body["choices"],
             body.get("active_choice"),
             body["mode"],
-            body["source"],
+            body.get("source", ""),
             body.get("target", ""),
+            body.get("steer_specs", []),
             float(body.get("strength", 1.0)),
             body.get("layers", ""),
             body.get("positions", ""),

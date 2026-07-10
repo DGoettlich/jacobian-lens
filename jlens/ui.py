@@ -20,15 +20,8 @@ def page() -> str:
     button.stop { background: #cf222e; border-color: #cf222e; color: white; }
     button:disabled { opacity: 0.5; cursor: default; }
     .choice-row { align-items: center; }
+    .choice-check { min-width: 160px; }
     .focus { display: flex; align-items: center; gap: 6px; font-weight: 600; }
-    .tokens { max-width: 780px; line-height: 1.9; }
-    .tok { padding: 2px 4px; margin: 1px; border-radius: 2px; display: inline-block; }
-    .answer { outline: 2px solid #1f2328; }
-    .a0 { background: #d8ccff; }
-    .a1 { background: #d7f5d0; }
-    .a2 { background: #ffe8bd; }
-    .a3 { background: #ffc9c9; }
-    .a4 { background: #bfe8ff; }
     .bad { color: #b42318; }
     .ok { color: #067647; }
     #status { min-height: 20px; margin-top: 10px; }
@@ -44,15 +37,13 @@ def page() -> str:
     .steer-row { margin: 8px 0; }
     .steer-header { color: #57606a; font-weight: 600; margin-bottom: 4px; }
     .steer-row input { width: 100%; box-sizing: border-box; }
-    .token-check { line-height: 1.9; min-height: 38px; padding: 8px; background: #f6f8fa; border-radius: 6px; }
-    .check-title { color: #57606a; font-size: 12px; margin-bottom: 4px; }
+    .token-check { min-height: 20px; padding: 8px; background: #f6f8fa; border-radius: 6px; }
     .report-tabs { display: flex; gap: 8px; margin-top: 18px; }
     .report-tabs button.active { border-color: #0969da; color: #0969da; font-weight: 600; }
     .generation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 12px; }
     .generation-card { border: 1px solid #d0d7de; border-radius: 6px; padding: 12px; min-height: 120px; }
     .generation-card h3 { margin: 0 0 8px; font-size: 15px; }
     .generated-text { white-space: pre-wrap; margin: 0 0 10px; }
-    .generated-tokens { line-height: 1.9; }
     .generation-error { color: #b42318; margin-top: 10px; }
     .muted { color: #57606a; }
     iframe { width: 100%; height: 860px; border: 1px solid #d0d7de; margin-top: 18px; }
@@ -109,15 +100,13 @@ def page() -> str:
       <label class="focus">Focus <select id="active-choice"></select></label>
       <button id="submit" disabled>Submit</button>
       <button id="export" disabled>Export</button>
-      <button id="mode">Token IDs</button>
     </div>
   </div>
 
   <div class="panel">
     <h2>Interventions</h2>
     <div class="hint">
-      Source and target are only tokenization checks for <code>question + " " + token</code>.
-      Swap and Steer generate from the question alone and show baseline against intervened output.
+      Swap and Steer generate from the question alone, then render an intervened report below.
     </div>
     <div class="row">
       <label>Cascading <input id="cascading" type="checkbox"></label>
@@ -167,10 +156,8 @@ def page() -> str:
   <iframe id="report"></iframe>
 
 <script>
-let tokenMode = "text";
 let activeReport = null;
 let reports = {};
-let tokenTimer = null;
 let interventionTimer = null;
 let servedLayers = null;
 let servedConfig = null;
@@ -244,16 +231,18 @@ function choiceRow(value) {
   div.innerHTML = `
     <input class="choice" value="${esc(value)}">
     <button class="remove">x</button>
-    <div class="tokens"></div>
+    <div class="token-check choice-check"></div>
   `;
   div.querySelector(".remove").onclick = () => {
     div.remove();
     updateFocusChoices();
-    scheduleTokenize();
+    clearReports();
+    scheduleInterventionCheck();
   };
   div.querySelector(".choice").oninput = () => {
     updateFocusChoices();
-    scheduleTokenize();
+    clearReports();
+    scheduleInterventionCheck();
   };
   return div;
 }
@@ -321,35 +310,11 @@ async function post(path, body) {
   return data;
 }
 
-function paint(row, data) {
-  row.querySelector(".tokens").innerHTML = tokenizationHtml(data);
-}
-
-function tokenizationHtml(data) {
-  const spans = data.spans.map((t, i) => {
-    const text = tokenMode === "ids" ? t.id : esc(t.text);
-    const answer = t.answer ? "answer" : "";
-    return `<span class="tok a${i % 5} ${answer}">${text}</span>`;
-  }).join("");
-  const status = data.single_token
-    ? `<span class="ok">single answer token: ${data.answer_ids[0]}</span>`
-    : `<span class="bad">answer tokens: [${data.answer_ids.join(", ")}]</span>`;
-  return `<div class="check-title">Tokenization check only: question + candidate</div>${spans}<br>${status}`;
-}
-
-async function tokenize() {
-  if (!choices().length) return;
-  const data = await post("/api/tokenize", tokenizeBody(choices()));
-  [...document.querySelectorAll(".choice-row")].forEach((row, i) => {
-    if (data.rows[i]) paint(row, data.rows[i]);
-  });
-}
-
-function scheduleTokenize() {
-  clearReports();
-  clearTimeout(tokenTimer);
-  tokenTimer = setTimeout(tokenize, 250);
-  scheduleInterventionCheck();
+function tokenCheckHtml(data) {
+  if (data.single_token) {
+    return `<span class="ok">Token ID: ${data.answer_ids[0]} (one token)</span>`;
+  }
+  return `<span class="bad">Token IDs: ${data.answer_ids.join(", ")} (not one token)</span>`;
 }
 
 document.querySelector("#add").onclick = () => {
@@ -380,7 +345,7 @@ document.querySelector("#serve").onclick = async () => {
     document.querySelector("#swap").disabled = false;
     document.querySelector("#steer").disabled = false;
     document.querySelector("#status").textContent = "Ready";
-    scheduleTokenize();
+    scheduleInterventionCheck();
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
   }
@@ -428,7 +393,26 @@ async function checkSwapTokens() {
     tokenizeBody(terms, checked("#chat-template")),
   );
   data.rows.forEach((row, i) => {
-    slots[i].innerHTML = tokenizationHtml(row);
+    slots[i].innerHTML = tokenCheckHtml(row);
+  });
+}
+
+async function checkChoiceTokens() {
+  const rows = [...document.querySelectorAll(".choice-row")];
+  const filledRows = rows.filter(row => row.querySelector(".choice").value.trim());
+  rows.forEach(row => {
+    row.querySelector(".choice-check").innerHTML = "";
+  });
+  if (!filledRows.length) return;
+
+  const data = await post(
+    "/api/tokenize",
+    tokenizeBody(filledRows.map(row => row.querySelector(".choice").value.trim())),
+  );
+  filledRows.forEach((row, index) => {
+    if (data.rows[index]) {
+      row.querySelector(".choice-check").innerHTML = tokenCheckHtml(data.rows[index]);
+    }
   });
 }
 
@@ -448,7 +432,7 @@ async function checkSteerTokens() {
   rows.forEach(row => {
     const token = row.querySelector(".steer-token").value.trim();
     if (!token) return;
-    row.querySelector(".steer-check").innerHTML = tokenizationHtml(data.rows[idx]);
+    row.querySelector(".steer-check").innerHTML = tokenCheckHtml(data.rows[idx]);
     idx += 1;
   });
 }
@@ -457,6 +441,7 @@ function scheduleInterventionCheck() {
   clearInterventionReports();
   clearTimeout(interventionTimer);
   interventionTimer = setTimeout(() => {
+    checkChoiceTokens();
     checkSwapTokens();
     checkSteerTokens();
   }, 250);
@@ -525,15 +510,10 @@ function generatedBranchHtml(title, branch) {
       </div>
     `;
   }
-  const tokens = branch.tokens.map((t, i) => {
-    const text = tokenMode === "ids" ? t.id : esc(t.text);
-    return `<span class="tok a${i % 5}">${text}</span>`;
-  }).join("");
   return `
     <div class="generation-card">
       <h3>${esc(title)}</h3>
       <div class="generated-text">${esc(branch.text || "")}</div>
-      <div class="generated-tokens">${tokens}</div>
     </div>
   `;
 }
@@ -572,8 +552,7 @@ function renderGenerationError(message) {
 }
 
 async function generateContinuation(mode) {
-  const label = mode === "baseline" ? "baseline" : mode;
-  document.querySelector("#status").textContent = `Generating ${label}`;
+  document.querySelector("#status").textContent = `Generating ${mode}`;
   try {
     const payload = {
       ...fullBody(),
@@ -594,6 +573,8 @@ async function generateContinuation(mode) {
     }
     generationResult = await post("/api/generate", payload);
     renderGeneration();
+    const report = await post("/api/intervene", payload);
+    saveReport(mode === "steer" ? "Steered" : "Swapped", report.html);
     document.querySelector("#status").textContent = "Done";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
@@ -625,26 +606,18 @@ document.querySelector("#export").onclick = () => {
   URL.revokeObjectURL(a.href);
 };
 
-document.querySelector("#mode").onclick = () => {
-  tokenMode = tokenMode === "text" ? "ids" : "text";
-  document.querySelector("#mode").textContent = tokenMode === "text" ? "Token IDs" : "Text";
-  tokenize();
-  checkSwapTokens();
-  checkSteerTokens();
-  renderGeneration();
-};
-
 document.querySelector("#question").oninput = () => {
   clearGeneration();
-  scheduleTokenize();
+  clearReports();
+  scheduleInterventionCheck();
 };
 document.querySelector("#model").onchange = () => {
   clearGeneration();
-  scheduleTokenize();
+  scheduleInterventionCheck();
 };
 document.querySelector("#architecture").onchange = () => {
   clearGeneration();
-  scheduleTokenize();
+  scheduleInterventionCheck();
 };
 document.querySelector("#source").oninput = () => {
   clearGeneration();
@@ -682,7 +655,7 @@ document.querySelector("#chat-template").onchange = () => {
 document.querySelector("#steer-rows").appendChild(steerRow("Paris"));
 updateFocusChoices();
 renderGeneration();
-scheduleTokenize();
+scheduleInterventionCheck();
 </script>
 </body>
 </html>"""
