@@ -182,12 +182,22 @@ function esc(s) {
     .replaceAll('"', "&quot;");
 }
 
+function value(selector, fallback = "") {
+  const element = document.querySelector(selector);
+  return element ? element.value : fallback;
+}
+
+function checked(selector) {
+  const element = document.querySelector(selector);
+  return element ? element.checked : false;
+}
+
 function baseBody() {
   return {
-    model: document.querySelector("#model").value.trim(),
-    architecture_model: document.querySelector("#architecture").value.trim(),
-    lens_repo: document.querySelector("#lens-repo").value.trim(),
-    lens_file: document.querySelector("#lens-file").value.trim(),
+    model: value("#model").trim(),
+    architecture_model: value("#architecture").trim(),
+    lens_repo: value("#lens-repo").trim(),
+    lens_file: value("#lens-file").trim(),
   };
 }
 
@@ -211,16 +221,16 @@ function choices() {
 function fullBody() {
   return {
     ...servedBody(),
-    question: document.querySelector("#question").value,
+    question: value("#question"),
     choices: choices(),
-    active_choice: document.querySelector("#active-choice").value || null,
+    active_choice: value("#active-choice") || null,
   };
 }
 
 function tokenizeBody(choiceList, chatTemplate = false) {
   return {
     ...(servedConfig || baseBody()),
-    question: document.querySelector("#question").value,
+    question: value("#question"),
     choices: choiceList,
     chat_template: chatTemplate,
   };
@@ -391,8 +401,8 @@ document.querySelector("#stop").onclick = async () => {
 };
 
 async function checkSwapTokens() {
-  const source = document.querySelector("#source").value.trim();
-  const target = document.querySelector("#target").value.trim();
+  const source = value("#source").trim();
+  const target = value("#target").trim();
   const terms = [];
   const slots = [];
   document.querySelector("#source-check").innerHTML = "";
@@ -409,7 +419,7 @@ async function checkSwapTokens() {
 
   const data = await post(
     "/api/tokenize",
-    tokenizeBody(terms, document.querySelector("#chat-template").checked),
+    tokenizeBody(terms, checked("#chat-template")),
   );
   data.rows.forEach((row, i) => {
     slots[i].innerHTML = tokenizationHtml(row);
@@ -426,7 +436,7 @@ async function checkSteerTokens() {
 
   const data = await post(
     "/api/tokenize",
-    tokenizeBody(specs.map(spec => spec.token), document.querySelector("#chat-template").checked),
+    tokenizeBody(specs.map(spec => spec.token), checked("#chat-template")),
   );
   let idx = 0;
   rows.forEach(row => {
@@ -535,20 +545,24 @@ function renderGeneration() {
 async function generateContinuation(mode) {
   const label = mode === "baseline" ? "baseline" : mode;
   document.querySelector("#status").textContent = `Generating ${label}`;
+  const payload = {
+    ...fullBody(),
+    mode,
+    cascading: checked("#cascading"),
+    max_tokens: Number(value("#gen-max-tokens", "32") || 32),
+    chat_template: checked("#chat-template"),
+  };
+  if (mode === "swap") {
+    payload.source = value("#source").trim();
+    payload.target = value("#target").trim();
+    payload.strength = Number(value("#strength", "1") || 1);
+    payload.layers = value("#layers").trim();
+    payload.positions = value("#positions").trim();
+  } else if (mode === "steer") {
+    payload.steer_specs = steerSpecs();
+  }
   try {
-    generationResult = await post("/api/generate", {
-      ...fullBody(),
-      mode,
-      source: document.querySelector("#source").value.trim(),
-      target: document.querySelector("#target").value.trim(),
-      steer_specs: steerSpecs(),
-      strength: Number(document.querySelector("#strength").value || 1),
-      cascading: document.querySelector("#cascading").checked,
-      layers: document.querySelector("#layers").value.trim(),
-      positions: document.querySelector("#positions").value.trim(),
-      max_tokens: Number(document.querySelector("#gen-max-tokens").value || 32),
-      chat_template: document.querySelector("#chat-template").checked,
-    });
+    generationResult = await post("/api/generate", payload);
     renderGeneration();
     document.querySelector("#status").textContent = "Done";
   } catch (err) {
