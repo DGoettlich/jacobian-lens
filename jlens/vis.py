@@ -25,7 +25,7 @@ import numpy as np
 import torch
 
 from jlens.hooks import ActivationRecorder
-from jlens.interventions import Intervention, _ActivationEditor, _deltas, _layers
+from jlens.interventions import Intervention, _get_editing_context, _layers
 from jlens.lens import JacobianLens
 from jlens.protocol import LensModel
 
@@ -260,30 +260,16 @@ def compute_slice(
             }
     else:
         edit_layers = _layers(model, lens, intervention.layers)
-        baseline_layers = sorted(set(layers) | set(edit_layers))
 
-        with ActivationRecorder(model.layers, at=baseline_layers) as recorder:
-            model.forward(input_ids)
-            baseline_activations = {
-                layer: recorder.activations[layer].detach()
-                for layer in baseline_layers
-            }
-
-        def delta_fn(
-            layer: int, residual: torch.Tensor, scale: torch.Tensor
-        ) -> torch.Tensor:
-            return intervention.delta(model, lens, layer, residual, scale)
-
-        deltas = _deltas(
-            baseline_activations,
+        with _get_editing_context(
+            model,
+            lens,
+            input_ids,
+            intervention,
             edit_layers,
-            intervention.positions,
-            delta_fn,
-        )
-
-        # Register the editor first so the recorder sees edited layer outputs.
-        with _ActivationEditor(model.layers, deltas), ActivationRecorder(
-            model.layers, at=layers
+        ), ActivationRecorder(
+            model.layers,
+            at=layers,
         ) as recorder:
             model.forward(input_ids)
             activations = {

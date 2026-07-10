@@ -10,6 +10,7 @@ if __name__ == "__main__":
     lens_path = "artifacts/ranke-1913-jlens.pt"
     dtype = torch.bfloat16
     strength = 1.0
+    cascading = False
     max_new_tokens = 1
 
     hf_model = AutoModelForCausalLM.from_pretrained(
@@ -44,7 +45,7 @@ if __name__ == "__main__":
                 _, logits, _ = lens.apply(model, text, layers=[layers[0]], positions=[-1])
                 next_id = int(logits[-1].argmax().item())
             else:
-                result = lens.swap(
+                _, logits, _ = lens.swap(
                     model,
                     text,
                     source_id,
@@ -52,8 +53,9 @@ if __name__ == "__main__":
                     strength=strength,
                     layers=layers,
                     positions=None,
+                    cascading=cascading,
                 )
-                next_id = int(result.intervened_logits[-1].argmax().item())
+                next_id = int(logits[-1].argmax().item())
             text += tokenizer.decode([next_id], clean_up_tokenization_spaces=False)
         return text[len(prompt) :]
 
@@ -82,7 +84,13 @@ if __name__ == "__main__":
         print(f"prompt: {prompt!r}")
         print(f"baseline:{greedy(prompt)}")
 
-        result = lens.swap(
+        _, base_logits, _ = lens.apply(
+            model,
+            prompt,
+            layers=[layers[0]],
+            positions=[-1],
+        )
+        _, changed_logits, _ = lens.swap(
             model,
             prompt,
             source_id,
@@ -90,10 +98,14 @@ if __name__ == "__main__":
             strength=strength,
             layers=layers,
             positions=None,
+            cascading=cascading,
         )
-        base = result.baseline_logits[-1]
-        changed = result.intervened_logits[-1]
-        print(f"swap strength={strength} layers={layers[0]}..{layers[-1]}")
+        base = base_logits[-1]
+        changed = changed_logits[-1]
+        print(
+            f"swap strength={strength} cascading={cascading} "
+            f"layers={layers[0]}..{layers[-1]}"
+        )
         for label, token_id in tracked_tokens:
             print(
                 f"  {label:12s} "

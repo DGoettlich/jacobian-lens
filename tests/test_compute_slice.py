@@ -104,19 +104,26 @@ def test_zero_strength_steer_slice_matches_normal_slice(model, lens):
     kwargs = {"pinned_token_ids": {pin}, "max_tracked": 4}
 
     baseline = compute_slice(model, lens, PROMPT, **kwargs)
-    intervened = compute_slice(
-        model,
-        lens,
-        PROMPT,
-        intervention=Steer(pin, strength=0.0, layers=[1], positions=[-1]),
-        **kwargs,
-    )
+    for cascading in (False, True):
+        intervened = compute_slice(
+            model,
+            lens,
+            PROMPT,
+            intervention=Steer(
+                pin,
+                strength=0.0,
+                layers=[1],
+                positions=[-1],
+                cascading=cascading,
+            ),
+            **kwargs,
+        )
 
-    assert baseline.layers == intervened.layers
-    assert baseline.tracked_token_ids == intervened.tracked_token_ids
-    np.testing.assert_array_equal(baseline.top_ids, intervened.top_ids)
-    np.testing.assert_array_equal(baseline.top_ranks, intervened.top_ranks)
-    np.testing.assert_array_equal(baseline.rank_tensor, intervened.rank_tensor)
+        assert baseline.layers == intervened.layers
+        assert baseline.tracked_token_ids == intervened.tracked_token_ids
+        np.testing.assert_array_equal(baseline.top_ids, intervened.top_ids)
+        np.testing.assert_array_equal(baseline.top_ranks, intervened.top_ranks)
+        np.testing.assert_array_equal(baseline.rank_tensor, intervened.rank_tensor)
 
 
 def test_zero_strength_swap_slice_allows_non_report_edit_layer(model, lens):
@@ -129,20 +136,22 @@ def test_zero_strength_swap_slice_allows_non_report_edit_layer(model, lens):
     }
 
     baseline = compute_slice(model, lens, PROMPT, **kwargs)
-    intervened = compute_slice(
-        model,
-        lens,
-        PROMPT,
-        intervention=Swap(
-            source_id,
-            target_id,
-            strength=0.0,
-            layers=[1],
-            positions=[-1],
-        ),
-        **kwargs,
-    )
+    for cascading in (False, True):
+        intervened = compute_slice(
+            model,
+            lens,
+            PROMPT,
+            intervention=Swap(
+                source_id,
+                target_id,
+                strength=0.0,
+                layers=[1],
+                positions=[-1],
+                cascading=cascading,
+            ),
+            **kwargs,
+        )
 
-    assert baseline.layers == [0, 2, 3]
-    np.testing.assert_array_equal(baseline.top_ids, intervened.top_ids)
-    np.testing.assert_array_equal(baseline.rank_tensor, intervened.rank_tensor)
+        assert baseline.layers == [0, 2, 3]
+        np.testing.assert_array_equal(baseline.top_ids, intervened.top_ids)
+        np.testing.assert_array_equal(baseline.rank_tensor, intervened.rank_tensor)
