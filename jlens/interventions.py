@@ -115,13 +115,13 @@ class _ActivationEditor:
         model: LensModel,
         lens: JacobianLens,
         intervention: Intervention,
-        layers: Sequence[int],
+        editable_layers: Sequence[int],
     ):
         self._blocks = blocks
         self._model = model
         self._lens = lens
         self._intervention = intervention
-        self._layers = layers
+        self._editable_layers = editable_layers
         self._handles: list[torch.utils.hooks.RemovableHandle] = []
 
     def _make_hook(self, layer: int) -> Callable[..., torch.Tensor | tuple]:
@@ -161,7 +161,7 @@ class _ActivationEditor:
     def __enter__(self) -> _ActivationEditor:
         """install hooks on the edited layers."""
         try:
-            for layer in sorted(self._layers):
+            for layer in sorted(self._editable_layers):
                 self._handles.append(
                     self._blocks[layer].register_forward_hook(self._make_hook(layer))
                 )
@@ -223,49 +223,6 @@ class _PrecomputedActivationEditor:
         self._handles = []
 
 
-def steer(
-    model: LensModel,
-    lens: JacobianLens,
-    prompt: str,
-    specs: Sequence[SteerSpec],
-    *,
-    cascading: bool = False,
-    max_seq_len: int = 512,
-) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
-    """run ``prompt`` with one or more token pushes."""
-    intervention = Steer(specs, cascading)
-    return _run(model, lens, prompt, intervention, max_seq_len)
-
-
-def swap(
-    model: LensModel,
-    lens: JacobianLens,
-    prompt: str,
-    source_token_id: int,
-    target_token_id: int,
-    *,
-    strength: float = 1.0,
-    layers: Sequence[int] | None = None,
-    positions: Sequence[int] | None = None,
-    cascading: bool = False,
-    max_seq_len: int = 512,
-) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
-    """run ``prompt`` while moving source-token weight onto target.
-
-    At each edited residual ``h``, form ``V = [v_source, v_target]``, compute
-    ``c = V^dagger h``, and patch only the source/target component of ``h``.
-    """
-    intervention = Swap(
-        source_token_id,
-        target_token_id,
-        strength,
-        layers,
-        positions,
-        cascading,
-    )
-    return _run(model, lens, prompt, intervention, max_seq_len)
-
-
 def _swap_delta(
     residual: torch.Tensor, source_vector: torch.Tensor, target_vector: torch.Tensor
 ) -> torch.Tensor:
@@ -277,8 +234,8 @@ def _swap_delta(
     source_weight = original_weights[0]
     target_weight = original_weights[1]
 
-    # in cascading runs, earlier layers can already make target stronger than
-    # source. flipping again would move the stream back and cancel the swap.
+    # if target is already stronger than source, another flip would move the
+    # stream back toward source instead of doing the requested one-way swap.
     if target_weight >= source_weight:
         return torch.zeros_like(residual)
 
@@ -402,7 +359,7 @@ def _readout_positions_for_intervention(
     return list(dict.fromkeys(positions))
 
 
-def _run(
+def run_intervention(
     model: LensModel,
     lens: JacobianLens,
     prompt: str,
@@ -410,7 +367,7 @@ def _run(
     max_seq_len: int,
 ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
     """run one forward pass with an intervention installed."""
-    edit_layers = _layers(model, lens, intervention)
+    edit_layers = _editable_layers(model, lens, intervention)
     input_ids = model.encode(prompt, max_length=max_seq_len)
     if input_ids.shape[0] != 1:
         raise ValueError("interventions require batch size 1")
@@ -489,7 +446,7 @@ def _get_baseline_deltas(
     return deltas
 
 
-def _layers(
+def _editable_layers(
     model: LensModel,
     lens: JacobianLens,
     intervention: Intervention,
