@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import torch
 
 from jlens.hooks import ActivationRecorder
 from jlens.protocol import LensModel
+
+if TYPE_CHECKING:
+    from jlens.interventions import SteerSpec
 
 
 class JacobianLens:
@@ -146,33 +150,24 @@ class JacobianLens:
         self,
         model: LensModel,
         prompt: str,
-        token_id: int,
-        strength: float,
+        specs: Sequence[SteerSpec],
         *,
-        layers: Sequence[int] | None = None,
-        positions: Sequence[int] | None = None,
         cascading: bool = False,
         max_seq_len: int = 512,
     ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
-        """Run ``prompt`` while adding a J-lens direction for ``token_id``.
+        """run ``prompt`` with one or more token pushes.
 
-        Positive ``strength`` makes the token direction more prominent;
-        negative ``strength`` suppresses it. Returns the same
-        ``(lens_logits, model_logits, input_ids)`` tuple as :meth:`apply`,
-        computed from the intervened forward pass.
+        returns the same ``(lens_logits, model_logits, input_ids)`` tuple as
+        :meth:`apply`, computed from the intervened forward pass.
         """
-        from jlens.interventions import steer
+        from jlens.interventions import Steer, run_intervention
 
-        return steer(
+        return run_intervention(
             model,
             self,
             prompt,
-            token_id,
-            strength,
-            layers=layers,
-            positions=positions,
-            cascading=cascading,
-            max_seq_len=max_seq_len,
+            Steer(specs, cascading=cascading),
+            max_seq_len,
         )
 
     def swap(
@@ -188,27 +183,28 @@ class JacobianLens:
         cascading: bool = False,
         max_seq_len: int = 512,
     ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
-        """Run ``prompt`` while moving source-token weight onto target.
+        """run ``prompt`` while moving source-token weight onto target.
 
-        ``strength=1`` applies the full source-to-target edit in their
-        two-vector span; smaller values make the edit partial, larger values
-        over-apply it.
-        Returns the same ``(lens_logits, model_logits, input_ids)`` tuple as
-        :meth:`apply`, computed from the intervened forward pass.
+        ``strength=1`` applies the full source-to-target edit. smaller values
+        make the edit partial; larger values push harder. returns the same
+        ``(lens_logits, model_logits, input_ids)`` tuple as :meth:`apply`,
+        computed from the intervened forward pass.
         """
-        from jlens.interventions import swap
+        from jlens.interventions import Swap, run_intervention
 
-        return swap(
+        return run_intervention(
             model,
             self,
             prompt,
-            source_token_id,
-            target_token_id,
-            strength=strength,
-            layers=layers,
-            positions=positions,
-            cascading=cascading,
-            max_seq_len=max_seq_len,
+            Swap(
+                source_token_id,
+                target_token_id,
+                strength=strength,
+                layers=layers,
+                positions=positions,
+                cascading=cascading,
+            ),
+            max_seq_len,
         )
 
     @torch.no_grad()

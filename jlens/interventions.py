@@ -1,6 +1,6 @@
 # Copyright 2026 Anthropic PBC
 # SPDX-License-Identifier: Apache-2.0
-"""Activation interventions from fitted Jacobian-lens token directions."""
+"""activation edits from fitted jacobian-lens token directions."""
 
 from __future__ import annotations
 
@@ -20,35 +20,53 @@ if TYPE_CHECKING:
     from jlens.lens import JacobianLens
 
 
+LayerSpec = int | Sequence[int] | None
+PositionSpec = int | Sequence[int] | None
+SteerSpec = tuple[int, float, LayerSpec, PositionSpec]
+
+
 @dataclass(frozen=True)
 class Steer:
-    """Add one J-lens token direction to selected residuals."""
+    """add one or more token pushes to selected residuals."""
 
-    token_id: int
-    strength: float
-    layers: Sequence[int] | None = None
-    positions: Sequence[int] | None = None
+    specs: Sequence[SteerSpec]
     cascading: bool = False
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.strength):
-            raise ValueError("strength must be finite")
+        """check that every token push has valid shape."""
+        if not self.specs:
+            raise ValueError("specs must be non-empty")
+        for token_id, strength, layers, positions in self.specs:
+            int(token_id)
+            if not math.isfinite(float(strength)):
+                raise ValueError("all strengths must be finite")
+            _normalize_layer_spec(layers)
+            if positions is not None and not isinstance(positions, int):
+                [int(pos) for pos in positions]
 
     def delta(
         self,
         model: LensModel,
         lens: JacobianLens,
         layer: int,
+        position: int,
+        seq_len: int,
         residual: torch.Tensor,
         scale: torch.Tensor,
     ) -> torch.Tensor:
-        token_vector = _token_direction(model, lens, residual, layer, self.token_id)
-        return float(self.strength) * scale * token_vector
+        """return the steer edit at one layer and token position."""
+        delta = torch.zeros_like(residual, dtype=torch.float32)
+        for token_id, strength in _steers_at_this_layer_and_position(
+            self, layer, position, seq_len
+        ):
+            token_vector = _token_direction(model, lens, residual, layer, token_id)
+            delta = delta + strength * scale * token_vector
+        return delta
 
 
 @dataclass(frozen=True)
 class Swap:
-    """Move J-lens source-token weight onto the target token."""
+    """move source-token weight onto the target token."""
 
     source_token_id: int
     target_token_id: int
@@ -58,6 +76,7 @@ class Swap:
     cascading: bool = False
 
     def __post_init__(self) -> None:
+        """check that the swap strength can be used."""
         if not math.isfinite(self.strength) or self.strength < 0:
             raise ValueError("strength must be finite and non-negative")
 
@@ -66,10 +85,13 @@ class Swap:
         model: LensModel,
         lens: JacobianLens,
         layer: int,
+        position: int,
+        seq_len: int,
         residual: torch.Tensor,
         scale: torch.Tensor,
     ) -> torch.Tensor:
-        del scale
+        """return the swap edit at one residual."""
+        del position, seq_len, scale
         source_vector = _token_direction(
             model, lens, residual, layer, self.source_token_id
         )
@@ -85,7 +107,7 @@ Intervention = Steer | Swap
 
 
 class _ActivationEditor:
-    """Forward-hook context manager that edits the live residual stream."""
+    """edit the live stream during a forward pass."""
 
     def __init__(
         self,
@@ -93,17 +115,19 @@ class _ActivationEditor:
         model: LensModel,
         lens: JacobianLens,
         intervention: Intervention,
-        layers: Sequence[int],
+        editable_layers: Sequence[int],
     ):
         self._blocks = blocks
         self._model = model
         self._lens = lens
         self._intervention = intervention
-        self._layers = layers
+        self._editable_layers = editable_layers
         self._handles: list[torch.utils.hooks.RemovableHandle] = []
 
     def _make_hook(self, layer: int) -> Callable[..., torch.Tensor | tuple]:
+        """build the hook that edits this layer as it runs."""
         def hook(module: nn.Module, inputs, output):
+            """apply the edit to this layer output."""
             hidden = output if torch.is_tensor(output) else output[0]
             if hidden.shape[0] != 1:
                 raise ValueError("interventions require batch size 1")
@@ -113,13 +137,15 @@ class _ActivationEditor:
             residuals = hidden[0].float()
             scale = residuals.norm(dim=-1).mean().clamp_min(1e-6)
 
-            for pos in _token_positions_to_edit(
-                self._intervention.positions, hidden.shape[1]
+            for pos in _token_positions_for_intervention(
+                self._intervention, layer, hidden.shape[1]
             ):
                 delta = self._intervention.delta(
                     self._model,
                     self._lens,
                     layer,
+                    pos,
+                    hidden.shape[1],
                     residuals[pos],
                     scale,
                 )
@@ -133,8 +159,9 @@ class _ActivationEditor:
         return hook
 
     def __enter__(self) -> _ActivationEditor:
+        """install hooks on the edited layers."""
         try:
-            for layer in sorted(self._layers):
+            for layer in sorted(self._editable_layers):
                 self._handles.append(
                     self._blocks[layer].register_forward_hook(self._make_hook(layer))
                 )
@@ -146,13 +173,14 @@ class _ActivationEditor:
         return self
 
     def __exit__(self, *exc) -> None:
+        """remove every installed hook."""
         for handle in self._handles:
             handle.remove()
         self._handles = []
 
 
 class _PrecomputedActivationEditor:
-    """Forward-hook context manager that replays fixed residual edits."""
+    """replay fixed edits during a forward pass."""
 
     def __init__(self, blocks: Sequence[nn.Module], deltas: dict[int, torch.Tensor]):
         self._blocks = blocks
@@ -160,7 +188,9 @@ class _PrecomputedActivationEditor:
         self._handles: list[torch.utils.hooks.RemovableHandle] = []
 
     def _make_hook(self, layer: int) -> Callable[..., torch.Tensor | tuple]:
+        """build the hook that adds a fixed layer delta."""
         def hook(module: nn.Module, inputs, output):
+            """add the precomputed edit to this layer output."""
             hidden = output if torch.is_tensor(output) else output[0]
             if hidden.shape[0] != 1:
                 raise ValueError("interventions require batch size 1")
@@ -173,6 +203,7 @@ class _PrecomputedActivationEditor:
         return hook
 
     def __enter__(self) -> _PrecomputedActivationEditor:
+        """install hooks on every layer with a fixed delta."""
         try:
             for layer in sorted(self._deltas):
                 self._handles.append(
@@ -186,60 +217,16 @@ class _PrecomputedActivationEditor:
         return self
 
     def __exit__(self, *exc) -> None:
+        """remove every installed hook."""
         for handle in self._handles:
             handle.remove()
         self._handles = []
 
 
-def steer(
-    model: LensModel,
-    lens: JacobianLens,
-    prompt: str,
-    token_id: int,
-    strength: float,
-    *,
-    layers: Sequence[int] | None = None,
-    positions: Sequence[int] | None = None,
-    cascading: bool = False,
-    max_seq_len: int = 512,
-) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
-    """Run ``prompt`` with a J-lens direction added to selected residuals."""
-    intervention = Steer(token_id, strength, layers, positions, cascading)
-    return _run(model, lens, prompt, intervention, max_seq_len)
-
-
-def swap(
-    model: LensModel,
-    lens: JacobianLens,
-    prompt: str,
-    source_token_id: int,
-    target_token_id: int,
-    *,
-    strength: float = 1.0,
-    layers: Sequence[int] | None = None,
-    positions: Sequence[int] | None = None,
-    cascading: bool = False,
-    max_seq_len: int = 512,
-) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
-    """Run ``prompt`` while moving source-token weight onto target.
-
-    At each edited residual ``h``, form ``V = [v_source, v_target]``, compute
-    ``c = V^dagger h``, and patch only the source/target component of ``h``.
-    """
-    intervention = Swap(
-        source_token_id,
-        target_token_id,
-        strength,
-        layers,
-        positions,
-        cascading,
-    )
-    return _run(model, lens, prompt, intervention, max_seq_len)
-
-
 def _swap_delta(
     residual: torch.Tensor, source_vector: torch.Tensor, target_vector: torch.Tensor
 ) -> torch.Tensor:
+    """return the vector to add for a source-to-target swap."""
     token_vectors = torch.stack([source_vector, target_vector], dim=1)
 
     # find the source/target weights that best reconstruct the current state.
@@ -247,8 +234,8 @@ def _swap_delta(
     source_weight = original_weights[0]
     target_weight = original_weights[1]
 
-    # in cascading runs, earlier layers can already make target stronger than
-    # source. flipping again would move the stream back and cancel the swap.
+    # if target is already stronger than source, another flip would move the
+    # stream back toward source instead of doing the requested one-way swap.
     if target_weight >= source_weight:
         return torch.zeros_like(residual)
 
@@ -266,7 +253,7 @@ def _token_direction(
     layer: int,
     token_id: int,
 ) -> torch.Tensor:
-    """Unit transpose-row direction for ``token_id`` in layer-residual space."""
+    """return the unit direction for one token at one layer."""
     weight = _unembedding_weight(model)
     if weight is not None:
         J = lens.jacobians[layer].to(device=residual.device, dtype=torch.float32)
@@ -290,19 +277,97 @@ def _token_direction(
 
 
 def _unembedding_weight(model: LensModel) -> torch.Tensor | None:
+    """return the lm-head weight when the model exposes it."""
     lm_head = getattr(model, "_lm_head", None) or getattr(model, "lm_head", None)
     weight = getattr(lm_head, "weight", None)
     return weight.detach() if torch.is_tensor(weight) else None
 
 
-def _run(
+def _normalize_layer_spec(layers: LayerSpec) -> list[int] | None:
+    """turn a layer spec into a list, or none for all fitted layers."""
+    if layers is None:
+        return None
+    if isinstance(layers, int):
+        return [int(layers)]
+    return [int(layer) for layer in layers]
+
+
+def _normalize_position_spec(positions: PositionSpec, seq_len: int) -> list[int]:
+    """turn a position spec into concrete token positions."""
+    if positions is None:
+        return list(range(seq_len))
+    if isinstance(positions, int):
+        positions = [positions]
+    return _token_positions_to_edit(positions, seq_len)
+
+
+def _steers_at_this_layer_and_position(
+    steer: Steer,
+    layer: int,
+    position: int,
+    seq_len: int,
+) -> list[tuple[int, float]]:
+    """return the token pushes that apply at one layer and token position."""
+    out = []
+    for token_id, strength, layers, positions in steer.specs:
+        layer_list = _normalize_layer_spec(layers)
+
+        # skip this spec if it names layers and this is not one of them.
+        if layer_list is not None and layer not in layer_list:
+            continue
+
+        position_list = _normalize_position_spec(positions, seq_len)
+
+        # skip this spec if this token position is not one of its positions.
+        if position not in position_list:
+            continue
+
+        out.append((int(token_id), float(strength)))
+
+    return out
+
+
+def _token_positions_for_intervention(
+    intervention: Intervention,
+    layer: int,
+    seq_len: int,
+) -> list[int]:
+    """return the token positions edited at one layer."""
+    if isinstance(intervention, Swap):
+        return _token_positions_to_edit(intervention.positions, seq_len)
+
+    positions = []
+    for _, _, layers, spec_positions in intervention.specs:
+        layer_list = _normalize_layer_spec(layers)
+        if layer_list is not None and layer not in layer_list:
+            continue
+        positions.extend(_normalize_position_spec(spec_positions, seq_len))
+
+    return list(dict.fromkeys(positions))
+
+
+def _readout_positions_for_intervention(
+    intervention: Intervention, seq_len: int
+) -> list[int]:
+    """return the token positions to include in returned logits."""
+    if isinstance(intervention, Swap):
+        return _token_positions_to_edit(intervention.positions, seq_len)
+
+    positions = []
+    for _, _, _, spec_positions in intervention.specs:
+        positions.extend(_normalize_position_spec(spec_positions, seq_len))
+    return list(dict.fromkeys(positions))
+
+
+def run_intervention(
     model: LensModel,
     lens: JacobianLens,
     prompt: str,
     intervention: Intervention,
     max_seq_len: int,
 ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
-    edit_layers = _layers(model, lens, intervention.layers)
+    """run one forward pass with an intervention installed."""
+    edit_layers = _editable_layers(model, lens, intervention)
     input_ids = model.encode(prompt, max_length=max_seq_len)
     if input_ids.shape[0] != 1:
         raise ValueError("interventions require batch size 1")
@@ -320,7 +385,7 @@ def _run(
         model,
         activations,
         edit_layers,
-        intervention.positions,
+        _readout_positions_for_intervention(intervention, input_ids.shape[1]),
         use_jacobian=True,
     )
     return lens_logits, model_logits, input_ids
@@ -334,6 +399,7 @@ def _get_editing_context(
     intervention: Intervention,
     edit_layers: Sequence[int],
 ) -> Iterator[None]:
+    """choose the live or precomputed edit path."""
     if intervention.cascading:
         with _ActivationEditor(model.layers, model, lens, intervention, edit_layers):
             yield
@@ -350,6 +416,7 @@ def _get_baseline_deltas(
     intervention: Intervention,
     edit_layers: Sequence[int],
 ) -> dict[int, torch.Tensor]:
+    """compute fixed edits from a clean forward pass."""
     # for non-cascading runs, compute every edit from the clean stream once.
     with ActivationRecorder(model.layers, at=edit_layers) as recorder:
         model.forward(input_ids)
@@ -358,7 +425,6 @@ def _get_baseline_deltas(
         }
 
     seq_len = input_ids.shape[1]
-    pos_list = _token_positions_to_edit(intervention.positions, seq_len)
     deltas = {
         layer: torch.zeros_like(activations[layer][0].float()) for layer in edit_layers
     }
@@ -366,11 +432,13 @@ def _get_baseline_deltas(
     for layer in edit_layers:
         residuals = activations[layer][0].float()
         scale = residuals.norm(dim=-1).mean().clamp_min(1e-6)
-        for pos in pos_list:
+        for pos in _token_positions_for_intervention(intervention, layer, seq_len):
             deltas[layer][pos] += intervention.delta(
                 model,
                 lens,
                 layer,
+                pos,
+                seq_len,
                 residuals[pos],
                 scale,
             )
@@ -378,12 +446,24 @@ def _get_baseline_deltas(
     return deltas
 
 
-def _layers(
+def _editable_layers(
     model: LensModel,
     lens: JacobianLens,
-    layers: Sequence[int] | None,
+    intervention: Intervention,
 ) -> list[int]:
-    selected = lens.source_layers if layers is None else list(layers)
+    """return the layers that may be edited."""
+    if isinstance(intervention, Steer):
+        selected = []
+        for _, _, layers, _ in intervention.specs:
+            layer_list = _normalize_layer_spec(layers)
+            selected.extend(lens.source_layers if layer_list is None else layer_list)
+    else:
+        selected = (
+            lens.source_layers
+            if intervention.layers is None
+            else list(intervention.layers)
+        )
+
     out_of_range = sorted(layer for layer in selected if not 0 <= layer < model.n_layers)
     unknown = sorted(set(selected) - set(lens.source_layers))
     if out_of_range:
@@ -398,6 +478,7 @@ def _layers(
 def _token_positions_to_edit(
     positions: Sequence[int] | None, seq_len: int
 ) -> list[int]:
+    """resolve token positions, including negative positions."""
     if positions is None:
         return list(range(seq_len))
 
