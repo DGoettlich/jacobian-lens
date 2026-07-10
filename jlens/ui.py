@@ -41,6 +41,7 @@ def page() -> str:
     .intervention-box { margin-top: 14px; padding: 12px; border: 1px solid #d0d7de; border-radius: 6px; }
     .intervention-box h3 { margin: 0 0 8px; font-size: 15px; }
     .steer-row { display: grid; grid-template-columns: 150px 90px 160px 160px 40px 1fr; gap: 8px; align-items: start; margin: 8px 0; }
+    .steer-header { color: #57606a; font-weight: 600; margin-bottom: 4px; }
     .steer-row input { width: 100%; box-sizing: border-box; }
     .token-check { line-height: 1.9; min-height: 38px; padding: 8px; background: #f6f8fa; border-radius: 6px; }
     .check-title { color: #57606a; font-size: 12px; margin-bottom: 4px; }
@@ -143,6 +144,14 @@ def page() -> str:
 
     <div class="intervention-box">
       <h3>Steer</h3>
+      <div class="steer-row steer-header">
+        <div>Token</div>
+        <div>Strength</div>
+        <div>Layers</div>
+        <div>Positions</div>
+        <div></div>
+        <div></div>
+      </div>
       <div id="steer-rows"></div>
       <div class="row">
         <button id="add-steer">+ steer</button>
