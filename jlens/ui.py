@@ -52,6 +52,7 @@ def page() -> str:
     .generation-card h3 { margin: 0 0 8px; font-size: 15px; }
     .generated-text { white-space: pre-wrap; margin: 0 0 10px; }
     .generated-tokens { line-height: 1.9; }
+    .generation-error { color: #b42318; margin-top: 10px; }
     .muted { color: #57606a; }
     iframe { width: 100%; height: 860px; border: 1px solid #d0d7de; margin-top: 18px; }
   </style>
@@ -482,7 +483,7 @@ function clearInterventionReports() {
 
 function clearGeneration() {
   generationResult = null;
-  document.querySelector("#generation-output").innerHTML = "";
+  renderGeneration();
 }
 
 function showReport(name) {
@@ -511,6 +512,14 @@ function renderReportTabs() {
 }
 
 function generatedBranchHtml(title, branch) {
+  if (!branch) {
+    return `
+      <div class="generation-card">
+        <h3>${esc(title)}</h3>
+        <div class="muted">No generation yet.</div>
+      </div>
+    `;
+  }
   const tokens = branch.tokens.map((t, i) => {
     const text = tokenMode === "ids" ? t.id : esc(t.text);
     return `<span class="tok a${i % 5}">${text}</span>`;
@@ -527,7 +536,12 @@ function generatedBranchHtml(title, branch) {
 function renderGeneration() {
   const output = document.querySelector("#generation-output");
   if (!generationResult) {
-    output.innerHTML = "";
+    output.innerHTML = `
+      <div class="generation-grid">
+        ${generatedBranchHtml("Baseline", null)}
+        ${generatedBranchHtml("Intervened", null)}
+      </div>
+    `;
     return;
   }
   if (generationResult.mode === "baseline") {
@@ -542,31 +556,43 @@ function renderGeneration() {
   `;
 }
 
+function renderGenerationError(message) {
+  document.querySelector("#generation-output").innerHTML = `
+    <div class="generation-grid">
+      ${generatedBranchHtml("Baseline", generationResult ? generationResult.baseline : null)}
+      ${generatedBranchHtml("Intervened", generationResult ? generationResult.intervened : null)}
+    </div>
+    <div class="generation-error">${esc(message)}</div>
+  `;
+}
+
 async function generateContinuation(mode) {
   const label = mode === "baseline" ? "baseline" : mode;
   document.querySelector("#status").textContent = `Generating ${label}`;
-  const payload = {
-    ...fullBody(),
-    mode,
-    cascading: checked("#cascading"),
-    max_tokens: Number(value("#gen-max-tokens", "32") || 32),
-    chat_template: checked("#chat-template"),
-  };
-  if (mode === "swap") {
-    payload.source = value("#source").trim();
-    payload.target = value("#target").trim();
-    payload.strength = Number(value("#strength", "1") || 1);
-    payload.layers = value("#layers").trim();
-    payload.positions = value("#positions").trim();
-  } else if (mode === "steer") {
-    payload.steer_specs = steerSpecs();
-  }
   try {
+    const payload = {
+      ...fullBody(),
+      mode,
+      cascading: checked("#cascading"),
+      max_tokens: Number(value("#gen-max-tokens", "32") || 32),
+      chat_template: checked("#chat-template"),
+    };
+    if (mode === "swap") {
+      payload.source = value("#source").trim();
+      payload.target = value("#target").trim();
+      payload.strength = Number(value("#strength", "1") || 1);
+      payload.layers = value("#layers").trim();
+      payload.positions = value("#positions").trim();
+    } else if (mode === "steer") {
+      payload.steer_specs = steerSpecs();
+      if (!payload.steer_specs.length) throw new Error("Add at least one steer token.");
+    }
     generationResult = await post("/api/generate", payload);
     renderGeneration();
     document.querySelector("#status").textContent = "Done";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
+    renderGenerationError(err.message);
   }
 }
 
@@ -650,6 +676,7 @@ document.querySelector("#chat-template").onchange = () => {
 });
 document.querySelector("#steer-rows").appendChild(steerRow("Paris"));
 updateFocusChoices();
+renderGeneration();
 scheduleTokenize();
 </script>
 </body>
