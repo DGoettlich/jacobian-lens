@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import torch
 
 from jlens.hooks import ActivationRecorder
 from jlens.protocol import LensModel
+
+if TYPE_CHECKING:
+    from jlens.interventions import SteerSpec
 
 
 class JacobianLens:
@@ -146,20 +150,15 @@ class JacobianLens:
         self,
         model: LensModel,
         prompt: str,
-        token_id: int,
-        strength: float,
+        specs: Sequence[SteerSpec],
         *,
-        layers: Sequence[int] | None = None,
-        positions: Sequence[int] | None = None,
         cascading: bool = False,
         max_seq_len: int = 512,
     ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
-        """Run ``prompt`` while adding a J-lens direction for ``token_id``.
+        """run ``prompt`` with one or more token pushes.
 
-        Positive ``strength`` makes the token direction more prominent;
-        negative ``strength`` suppresses it. Returns the same
-        ``(lens_logits, model_logits, input_ids)`` tuple as :meth:`apply`,
-        computed from the intervened forward pass.
+        returns the same ``(lens_logits, model_logits, input_ids)`` tuple as
+        :meth:`apply`, computed from the intervened forward pass.
         """
         from jlens.interventions import steer
 
@@ -167,10 +166,7 @@ class JacobianLens:
             model,
             self,
             prompt,
-            token_id,
-            strength,
-            layers=layers,
-            positions=positions,
+            specs,
             cascading=cascading,
             max_seq_len=max_seq_len,
         )

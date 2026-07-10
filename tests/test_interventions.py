@@ -59,10 +59,7 @@ def test_steer_zero_strength_leaves_logits_unchanged():
         _, intervened_logits, _ = lens.steer(
             model,
             PROMPT,
-            token_id=7,
-            strength=0.0,
-            layers=[1],
-            positions=[-1],
+            [(7, 0.0, [1], [-1])],
             cascading=cascading,
             max_seq_len=64,
         )
@@ -83,10 +80,27 @@ def test_steer_changes_logits():
     _, intervened_logits, _ = lens.steer(
         model,
         PROMPT,
-        token_id=7,
-        strength=0.1,
-        layers=[1],
-        positions=[-1],
+        [(7, 0.1, [1], [-1])],
+        max_seq_len=64,
+    )
+
+    assert not torch.allclose(intervened_logits, baseline_logits)
+
+
+def test_multiple_steer_specs_change_logits():
+    model, lens = _model_and_lens()
+
+    _, baseline_logits, _ = lens.apply(
+        model,
+        PROMPT,
+        layers=[1, 2],
+        positions=[-1, -2],
+        max_seq_len=64,
+    )
+    _, intervened_logits, _ = lens.steer(
+        model,
+        PROMPT,
+        [(7, 0.05, 1, -1), (8, 0.05, 2, -2)],
         max_seq_len=64,
     )
 
@@ -118,7 +132,7 @@ def test_bad_layer_rejected():
     model, lens = _model_and_lens()
 
     try:
-        lens.steer(model, PROMPT, token_id=1, strength=0.1, layers=[3], max_seq_len=64)
+        lens.steer(model, PROMPT, [(1, 0.1, [3], [-1])], max_seq_len=64)
     except ValueError as err:
         assert "final layer" in str(err)
     else:

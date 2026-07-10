@@ -259,7 +259,7 @@ def compute_slice(
                 layer: recorder.activations[layer].detach() for layer in layers
             }
     else:
-        edit_layers = _layers(model, lens, intervention.layers)
+        edit_layers = _layers(model, lens, intervention)
 
         with _get_editing_context(
             model,

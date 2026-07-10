@@ -110,10 +110,7 @@ def test_zero_strength_steer_slice_matches_normal_slice(model, lens):
             lens,
             PROMPT,
             intervention=Steer(
-                pin,
-                strength=0.0,
-                layers=[1],
-                positions=[-1],
+                [(pin, 0.0, [1], [-1])],
                 cascading=cascading,
             ),
             **kwargs,
