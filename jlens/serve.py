@@ -329,6 +329,8 @@ class LensWorker:
         return self.model.unembed(hidden[:, -1, :])[0]
 
     def generation_input_ids(self, question: str, chat_template: bool):
+        import torch
+
         self.ensure_served()
         if not chat_template:
             return self.model.encode(question, max_length=512)
@@ -339,6 +341,8 @@ class LensWorker:
             add_generation_prompt=True,
             return_tensors="pt",
         )
+        if not torch.is_tensor(input_ids):
+            input_ids = input_ids["input_ids"]
         return input_ids.to(self.model.input_device)
 
     def generate_branch(
