@@ -77,6 +77,7 @@ def page() -> str:
     </div>
 
     <div class="row">
+      <label>Chat template <input id="chat-template" type="checkbox"></label>
       <button id="serve" class="primary">Serve</button>
       <button id="stop" class="stop" disabled>Stop</button>
     </div>
@@ -111,7 +112,6 @@ def page() -> str:
     <div class="row">
       <label>Cascading <input id="cascading" type="checkbox"></label>
       <label>Max tokens <input id="gen-max-tokens" class="small" type="number" value="32" min="1" step="1"></label>
-      <label>Chat template <input id="chat-template" type="checkbox"></label>
       <span id="layer-hint" class="muted">Serve a lens to see fitted layers.</span>
     </div>
 
@@ -187,6 +187,7 @@ function baseBody() {
     architecture_model: value("#architecture").trim(),
     lens_repo: value("#lens-repo").trim(),
     lens_file: value("#lens-file").trim(),
+    chat_template: checked("#chat-template"),
   };
 }
 
@@ -196,7 +197,7 @@ function servedBody() {
 }
 
 function setServeFieldsDisabled(disabled) {
-  ["#model", "#architecture", "#lens-repo", "#lens-file"].forEach(selector => {
+  ["#model", "#architecture", "#lens-repo", "#lens-file", "#chat-template"].forEach(selector => {
     document.querySelector(selector).disabled = disabled;
   });
 }
@@ -216,12 +217,11 @@ function fullBody() {
   };
 }
 
-function tokenizeBody(choiceList, chatTemplate = false) {
+function tokenizeBody(choiceList) {
   return {
     ...(servedConfig || baseBody()),
     question: value("#question"),
     choices: choiceList,
-    chat_template: chatTemplate,
   };
 }
 
@@ -390,7 +390,7 @@ async function checkSwapTokens() {
 
   const data = await post(
     "/api/tokenize",
-    tokenizeBody(terms, checked("#chat-template")),
+    tokenizeBody(terms),
   );
   data.rows.forEach((row, i) => {
     slots[i].innerHTML = tokenCheckHtml(row);
@@ -426,7 +426,7 @@ async function checkSteerTokens() {
 
   const data = await post(
     "/api/tokenize",
-    tokenizeBody(specs.map(spec => spec.token), checked("#chat-template")),
+    tokenizeBody(specs.map(spec => spec.token)),
   );
   let idx = 0;
   rows.forEach(row => {
@@ -559,7 +559,6 @@ async function generateContinuation(mode) {
       mode,
       cascading: checked("#cascading"),
       max_tokens: Number(value("#gen-max-tokens", "32") || 32),
-      chat_template: checked("#chat-template"),
     };
     if (mode === "swap") {
       payload.source = value("#source").trim();
@@ -646,6 +645,7 @@ document.querySelector("#positions").oninput = () => {
 document.querySelector("#gen-max-tokens").oninput = clearGeneration;
 document.querySelector("#chat-template").onchange = () => {
   clearGeneration();
+  clearReports();
   scheduleInterventionCheck();
 };
 

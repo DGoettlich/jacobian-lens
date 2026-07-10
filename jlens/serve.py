@@ -212,9 +212,21 @@ class LensWorker:
             raise ValueError("Model is not served. Press Serve first.")
 
     @modal.method()
-    def render(self, question: str, choices: list[str], active_choice: str | None):
+    def render(
+        self,
+        question: str,
+        choices: list[str],
+        active_choice: str | None,
+        chat_template: bool,
+    ):
         self.ensure_served()
-        return self.render_report(question, choices, active_choice, None, "Baseline")
+        return self.render_report(
+            generation_prompt_text(self.tokenizer, question, chat_template),
+            choices,
+            active_choice,
+            None,
+            "Baseline",
+        )
 
     def render_report(
         self,
@@ -275,9 +287,11 @@ class LensWorker:
         layers_text: str,
         positions_text: str,
         cascading: bool,
+        chat_template: bool,
     ):
+        prompt = generation_prompt_text(self.tokenizer, question, chat_template)
         intervention, label, probe_rows = self.build_intervention(
-            question,
+            prompt,
             mode,
             source,
             target,
@@ -290,7 +304,7 @@ class LensWorker:
         probe_choices = [row["choice"] for row in probe_rows]
         report_choices = list(dict.fromkeys([*choices, *probe_choices]))
         result = self.render_report(
-            question,
+            prompt,
             report_choices,
             active_choice,
             intervention,
@@ -684,6 +698,7 @@ async def run(request: Request):
             body["question"],
             body["choices"],
             body.get("active_choice"),
+            bool(body.get("chat_template", False)),
         )
     )
 
@@ -704,6 +719,7 @@ async def intervene(request: Request):
             body.get("layers", ""),
             body.get("positions", ""),
             bool(body.get("cascading", False)),
+            bool(body.get("chat_template", False)),
         )
     )
 
