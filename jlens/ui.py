@@ -118,7 +118,11 @@ def page() -> str:
     <div class="row">
       <label>Strength <input id="strength" class="small" type="number" value="1" min="0" step="0.1"></label>
       <label>Cascading <input id="cascading" type="checkbox"></label>
-      <label>Layers <input id="layers" value="" placeholder="blank or 6-22"></label>
+      <div class="field">
+        <label>Layers</label>
+        <input id="layers" value="" placeholder="blank = all fitted">
+        <div id="layer-hint" class="muted">Serve a lens to see fitted layers.</div>
+      </div>
       <label>Positions <input id="positions" value="" placeholder="blank, -1, 0,3,-1"></label>
       <button id="swap" disabled>Swap</button>
       <button id="steer" disabled>Steer</button>
@@ -134,6 +138,7 @@ let activeReport = null;
 let reports = {};
 let tokenTimer = null;
 let interventionTimer = null;
+let servedLayers = null;
 
 function esc(s) {
   return String(s)
@@ -249,7 +254,11 @@ document.querySelector("#add").onclick = () => {
 document.querySelector("#serve").onclick = async () => {
   document.querySelector("#status").textContent = "Loading model/lens on Modal. First 4B load can take a few minutes.";
   try {
-    await post("/api/serve", baseBody());
+    const data = await post("/api/serve", baseBody());
+    servedLayers = data.source_layers || null;
+    document.querySelector("#layer-hint").textContent = servedLayers
+      ? `Fitted layers: ${servedLayers.join(", ")}`
+      : "No fitted layers returned.";
     document.querySelector("#serve").disabled = true;
     document.querySelector("#stop").disabled = false;
     document.querySelector("#submit").disabled = false;
@@ -270,6 +279,8 @@ document.querySelector("#stop").onclick = async () => {
     document.querySelector("#swap").disabled = true;
     document.querySelector("#steer").disabled = true;
     document.querySelector("#status").textContent = "Stopped";
+    servedLayers = null;
+    document.querySelector("#layer-hint").textContent = "Serve a lens to see fitted layers.";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
   }

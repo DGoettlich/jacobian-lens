@@ -129,7 +129,7 @@ class LensWorker:
             and self.tokenizer is not None
             and self.lens is not None
         ):
-            return {"served": True}
+            return {"served": True, "source_layers": self.lens.source_layers}
 
         import torch
         from transformers import AutoConfig, AutoModelForCausalLM, AutoTokenizer
@@ -164,7 +164,7 @@ class LensWorker:
             filename=self.lens_file,
         )
         print("worker ready", flush=True)
-        return {"served": True}
+        return {"served": True, "source_layers": self.lens.source_layers}
 
     @modal.method()
     def stop(self):
