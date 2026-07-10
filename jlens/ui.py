@@ -107,10 +107,10 @@ def page() -> str:
   </div>
 
   <div class="panel">
-    <h2>Intervened Reports</h2>
+    <h2>Interventions</h2>
     <div class="hint">
       Source and target are only tokenization checks for <code>question + " " + token</code>.
-      Swap and Steer render a new native J-lens report from the question alone.
+      Swap and Steer generate from the question alone and show baseline against intervened output.
     </div>
     <div class="intervention-row">
       <label>Source token <input id="source" value="Paris"></label>
@@ -129,21 +129,10 @@ def page() -> str:
         <div id="layer-hint" class="muted">Serve a lens to see fitted layers.</div>
       </div>
       <label>Positions <input id="positions" value="" placeholder="blank, -1, 0,3,-1"></label>
+      <label>Max tokens <input id="gen-max-tokens" class="small" type="number" value="32" min="1" step="1"></label>
+      <label>Chat template <input id="chat-template" type="checkbox"></label>
       <button id="swap" disabled>Swap</button>
       <button id="steer" disabled>Steer</button>
-    </div>
-  </div>
-
-  <div class="panel">
-    <h2>Generate</h2>
-    <div class="hint">
-      Generation starts from the question only. Source and target are used only for the intervention token IDs.
-    </div>
-    <div class="row">
-      <label>Max tokens <input id="gen-max-tokens" class="small" type="number" value="32" min="1" step="1"></label>
-      <button id="gen-baseline" disabled>Baseline</button>
-      <button id="gen-swap" disabled>Swap</button>
-      <button id="gen-steer" disabled>Steer</button>
     </div>
     <div id="generation-output"></div>
   </div>
@@ -158,6 +147,7 @@ let reports = {};
 let tokenTimer = null;
 let interventionTimer = null;
 let servedLayers = null;
+let servedConfig = null;
 let generationResult = null;
 
 function esc(s) {
@@ -177,6 +167,17 @@ function baseBody() {
   };
 }
 
+function servedBody() {
+  if (!servedConfig) throw new Error("Model is not served. Press Serve first.");
+  return {...servedConfig};
+}
+
+function setServeFieldsDisabled(disabled) {
+  ["#model", "#architecture", "#lens-repo", "#lens-file"].forEach(selector => {
+    document.querySelector(selector).disabled = disabled;
+  });
+}
+
 function choices() {
   return [...document.querySelectorAll("input.choice")]
     .map(x => x.value.trim())
@@ -185,10 +186,19 @@ function choices() {
 
 function fullBody() {
   return {
-    ...baseBody(),
+    ...servedBody(),
     question: document.querySelector("#question").value,
     choices: choices(),
     active_choice: document.querySelector("#active-choice").value || null,
+  };
+}
+
+function tokenizeBody(choiceList, chatTemplate = false) {
+  return {
+    ...(servedConfig || baseBody()),
+    question: document.querySelector("#question").value,
+    choices: choiceList,
+    chat_template: chatTemplate,
   };
 }
 
@@ -253,7 +263,7 @@ function tokenizationHtml(data) {
 
 async function tokenize() {
   if (!choices().length) return;
-  const data = await post("/api/tokenize", fullBody());
+  const data = await post("/api/tokenize", tokenizeBody(choices()));
   [...document.querySelectorAll(".choice-row")].forEach((row, i) => {
     if (data.rows[i]) paint(row, data.rows[i]);
   });
@@ -274,20 +284,21 @@ document.querySelector("#add").onclick = () => {
 document.querySelector("#serve").onclick = async () => {
   document.querySelector("#status").textContent = "Loading model/lens on Modal. First 4B load can take a few minutes.";
   try {
-    const data = await post("/api/serve", baseBody());
+    const config = baseBody();
+    const data = await post("/api/serve", config);
+    servedConfig = config;
     servedLayers = data.source_layers || null;
     document.querySelector("#layer-hint").textContent = servedLayers
       ? `Fitted layers: ${servedLayers.join(", ")}`
       : "No fitted layers returned.";
+    setServeFieldsDisabled(true);
     document.querySelector("#serve").disabled = true;
     document.querySelector("#stop").disabled = false;
     document.querySelector("#submit").disabled = false;
     document.querySelector("#swap").disabled = false;
     document.querySelector("#steer").disabled = false;
-    document.querySelector("#gen-baseline").disabled = false;
-    document.querySelector("#gen-swap").disabled = false;
-    document.querySelector("#gen-steer").disabled = false;
     document.querySelector("#status").textContent = "Ready";
+    scheduleTokenize();
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
   }
@@ -295,19 +306,19 @@ document.querySelector("#serve").onclick = async () => {
 
 document.querySelector("#stop").onclick = async () => {
   try {
-    await post("/api/stop", baseBody());
+    await post("/api/stop", servedBody());
+    servedConfig = null;
+    setServeFieldsDisabled(false);
     document.querySelector("#serve").disabled = false;
     document.querySelector("#stop").disabled = true;
     document.querySelector("#submit").disabled = true;
     document.querySelector("#swap").disabled = true;
     document.querySelector("#steer").disabled = true;
-    document.querySelector("#gen-baseline").disabled = true;
-    document.querySelector("#gen-swap").disabled = true;
-    document.querySelector("#gen-steer").disabled = true;
     document.querySelector("#status").textContent = "Stopped";
     servedLayers = null;
     document.querySelector("#layer-hint").textContent = "Serve a lens to see fitted layers.";
     clearGeneration();
+    clearReports();
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
   }
@@ -330,7 +341,10 @@ async function checkInterventionTokens() {
   }
   if (!terms.length) return;
 
-  const data = await post("/api/tokenize", {...fullBody(), choices: terms});
+  const data = await post(
+    "/api/tokenize",
+    tokenizeBody(terms, document.querySelector("#chat-template").checked),
+  );
   data.rows.forEach((row, i) => {
     slots[i].innerHTML = tokenizationHtml(row);
   });
@@ -396,39 +410,6 @@ function renderReportTabs() {
   });
 }
 
-async function renderIntervention(mode) {
-  const label = mode === "swap" ? "Swap" : "Steer";
-  document.querySelector("#status").textContent = `Rendering ${label.toLowerCase()} report`;
-  try {
-    if (!reports.Baseline) {
-      const baseline = await post("/api/run", fullBody());
-      saveReport("Baseline", baseline.html);
-    }
-    const data = await post("/api/intervene", {
-      ...fullBody(),
-      mode,
-      source: document.querySelector("#source").value.trim(),
-      target: document.querySelector("#target").value.trim(),
-      strength: Number(document.querySelector("#strength").value || 1),
-      cascading: document.querySelector("#cascading").checked,
-      layers: document.querySelector("#layers").value.trim(),
-      positions: document.querySelector("#positions").value.trim(),
-    });
-    const suffix = [
-      document.querySelector("#cascading").checked ? "cascade" : "",
-      document.querySelector("#layers").value.trim() ? `L=${document.querySelector("#layers").value.trim()}` : "",
-      document.querySelector("#positions").value.trim() ? `P=${document.querySelector("#positions").value.trim()}` : "",
-    ].filter(Boolean).join(", ");
-    const name = mode === "swap"
-      ? `Swap ${document.querySelector("#source").value.trim()} -> ${document.querySelector("#target").value.trim()}`
-      : `Steer ${document.querySelector("#source").value.trim()}`;
-    saveReport(suffix ? `${name} (${suffix})` : name, data.html);
-    document.querySelector("#status").textContent = "Done";
-  } catch (err) {
-    document.querySelector("#status").textContent = err.message;
-  }
-}
-
 function generatedBranchHtml(title, branch) {
   const tokens = branch.tokens.map((t, i) => {
     const text = tokenMode === "ids" ? t.id : esc(t.text);
@@ -475,6 +456,7 @@ async function generateContinuation(mode) {
       layers: document.querySelector("#layers").value.trim(),
       positions: document.querySelector("#positions").value.trim(),
       max_tokens: Number(document.querySelector("#gen-max-tokens").value || 32),
+      chat_template: document.querySelector("#chat-template").checked,
     });
     renderGeneration();
     document.querySelector("#status").textContent = "Done";
@@ -483,11 +465,8 @@ async function generateContinuation(mode) {
   }
 }
 
-document.querySelector("#swap").onclick = () => renderIntervention("swap");
-document.querySelector("#steer").onclick = () => renderIntervention("steer");
-document.querySelector("#gen-baseline").onclick = () => generateContinuation("baseline");
-document.querySelector("#gen-swap").onclick = () => generateContinuation("swap");
-document.querySelector("#gen-steer").onclick = () => generateContinuation("steer");
+document.querySelector("#swap").onclick = () => generateContinuation("swap");
+document.querySelector("#steer").onclick = () => generateContinuation("steer");
 
 document.querySelector("#submit").onclick = async () => {
   document.querySelector("#status").textContent = "Running";
@@ -555,6 +534,10 @@ document.querySelector("#positions").oninput = () => {
   clearInterventionReports();
 };
 document.querySelector("#gen-max-tokens").oninput = clearGeneration;
+document.querySelector("#chat-template").onchange = () => {
+  clearGeneration();
+  scheduleInterventionCheck();
+};
 
 ["Paris", "London", "Berlin"].forEach(x => {
   document.querySelector("#choices").appendChild(choiceRow(x));

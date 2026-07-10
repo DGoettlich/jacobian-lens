@@ -59,6 +59,18 @@ def tokenize_choices(tokenizer, question: str, choices: Sequence[str]) -> list[d
     return rows
 
 
+def generation_prompt_text(tokenizer, question: str, chat_template: bool) -> str:
+    if not chat_template:
+        return question
+    if not getattr(tokenizer, "chat_template", None):
+        raise ValueError("tokenizer has no chat_template")
+    return tokenizer.apply_chat_template(
+        [{"role": "user", "content": question}],
+        add_generation_prompt=True,
+        tokenize=False,
+    )
+
+
 def parse_indices(value: str | None) -> list[int] | None:
     """Parse a small comma-separated int/range list.
 
@@ -173,8 +185,13 @@ class LensWorker:
         self.lens = None
         return {"served": False}
 
+    def ensure_served(self):
+        if self.model is None or self.tokenizer is None or self.lens is None:
+            raise ValueError("Model is not served. Press Serve first.")
+
     @modal.method()
     def render(self, question: str, choices: list[str], active_choice: str | None):
+        self.ensure_served()
         return self.render_report(question, choices, active_choice, None, "Baseline")
 
     def render_report(
@@ -187,9 +204,7 @@ class LensWorker:
     ):
         from jlens.vis import build_page, compute_slice
 
-        assert self.model is not None
-        assert self.tokenizer is not None
-        assert self.lens is not None
+        self.ensure_served()
 
         token_rows = tokenize_choices(self.tokenizer, question, choices)
         token_ids = {
@@ -240,6 +255,7 @@ class LensWorker:
     ):
         import jlens
 
+        self.ensure_served()
         assert mode in {"swap", "steer"}
         probe_choices = [source] if mode == "steer" else [source, target]
         probe_rows = tokenize_choices(self.tokenizer, question, probe_choices)
@@ -287,8 +303,7 @@ class LensWorker:
     def next_token_logits(self, input_ids, intervention):
         import torch
 
-        assert self.model is not None
-        assert self.lens is not None
+        self.ensure_served()
 
         if intervention is None:
             with torch.no_grad():
@@ -314,13 +329,31 @@ class LensWorker:
             hidden = output[0]
         return self.model.unembed(hidden[:, -1, :])[0]
 
-    def generate_branch(self, question: str, intervention, max_tokens: int) -> dict:
+    def generation_input_ids(self, question: str, chat_template: bool):
+        self.ensure_served()
+        if not chat_template:
+            return self.model.encode(question, max_length=512)
+        if not getattr(self.tokenizer, "chat_template", None):
+            raise ValueError("tokenizer has no chat_template")
+        input_ids = self.tokenizer.apply_chat_template(
+            [{"role": "user", "content": question}],
+            add_generation_prompt=True,
+            return_tensors="pt",
+        )
+        return input_ids.to(self.model.input_device)
+
+    def generate_branch(
+        self,
+        question: str,
+        intervention,
+        max_tokens: int,
+        chat_template: bool,
+    ) -> dict:
         import torch
 
-        assert self.model is not None
-        assert self.tokenizer is not None
+        self.ensure_served()
 
-        input_ids = self.model.encode(question, max_length=512)
+        input_ids = self.generation_input_ids(question, chat_template)
         generated_ids = []
         eos_token_id = self.tokenizer.eos_token_id
         eos_ids = set(eos_token_id if isinstance(eos_token_id, list) else [eos_token_id])
@@ -369,17 +402,20 @@ class LensWorker:
         positions_text: str,
         cascading: bool,
         max_tokens: int,
+        chat_template: bool,
     ):
         import jlens
 
+        self.ensure_served()
         assert mode in {"baseline", "swap", "steer"}
         max_tokens = max(1, int(max_tokens))
-        baseline = self.generate_branch(question, None, max_tokens)
+        baseline = self.generate_branch(question, None, max_tokens, chat_template)
         if mode == "baseline":
             return {"mode": mode, "baseline": baseline}
 
         probe_choices = [source] if mode == "steer" else [source, target]
-        probe_rows = tokenize_choices(self.tokenizer, question, probe_choices)
+        probe_question = generation_prompt_text(self.tokenizer, question, chat_template)
+        probe_rows = tokenize_choices(self.tokenizer, probe_question, probe_choices)
         assert probe_rows[0]["single_token"], "source must be one token in context"
         source_id = int(probe_rows[0]["answer_ids"][0])
 
@@ -408,11 +444,17 @@ class LensWorker:
         return {
             "mode": mode,
             "baseline": baseline,
-            "intervened": self.generate_branch(question, intervention, max_tokens),
+            "intervened": self.generate_branch(
+                question,
+                intervention,
+                max_tokens,
+                chat_template,
+            ),
             "probe_tokens": probe_rows,
             "layers": layers,
             "positions": positions,
             "cascading": bool(cascading),
+            "chat_template": bool(chat_template),
         }
 
 
@@ -440,9 +482,15 @@ def index():
 async def tokenize(request: Request):
     body = await request.json()
     tokenizer_source = body.get("architecture_model") or body["model"]
-    rows = tokenize_choices(
-        get_tokenizer(tokenizer_source),
+    tokenizer = get_tokenizer(tokenizer_source)
+    question = generation_prompt_text(
+        tokenizer,
         body["question"],
+        bool(body.get("chat_template", False)),
+    )
+    rows = tokenize_choices(
+        tokenizer,
+        question,
         body["choices"],
     )
     return JSONResponse({"rows": rows})
@@ -503,6 +551,7 @@ async def generate(request: Request):
             body.get("positions", ""),
             bool(body.get("cascading", False)),
             int(body.get("max_tokens", 32)),
+            bool(body.get("chat_template", False)),
         )
     )
 
