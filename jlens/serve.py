@@ -100,6 +100,28 @@ def parse_indices(value: str | None) -> list[int] | None:
     return list(dict.fromkeys(out)) or None
 
 
+def frozen_positions(
+    positions: list[int] | None,
+    prompt_length: int,
+) -> list[int]:
+    if positions is None:
+        return list(range(prompt_length))
+
+    frozen = [position + prompt_length if position < 0 else position for position in positions]
+    if any(position < 0 or position >= prompt_length for position in frozen):
+        raise ValueError("position is outside the prompt")
+    return list(dict.fromkeys(frozen))
+
+
+def padded_deltas(deltas, seq_len: int):
+    import torch.nn.functional as F
+
+    return {
+        layer: F.pad(delta, (0, 0, 0, seq_len - delta.shape[0]))
+        for layer, delta in deltas.items()
+    }
+
+
 secret_name = os.environ.get("JLENS_HF_TOKEN_SECRET", "HLLM")
 
 image = (
@@ -341,26 +363,34 @@ class LensWorker:
         )
         return intervention, f"Swap {source} -> {target}", probe_rows
 
-    def next_token_logits(self, input_ids, intervention):
+    def freeze_intervention(self, intervention, prompt_length: int):
+        import jlens
+
+        if isinstance(intervention, jlens.Steer):
+            return jlens.Steer(
+                [
+                    (
+                        token_id,
+                        strength,
+                        layers,
+                        frozen_positions(positions, prompt_length),
+                    )
+                    for token_id, strength, layers, positions in intervention.specs
+                ],
+                cascading=intervention.cascading,
+            )
+
+        return jlens.Swap(
+            intervention.source_token_id,
+            intervention.target_token_id,
+            strength=intervention.strength,
+            layers=intervention.layers,
+            positions=frozen_positions(intervention.positions, prompt_length),
+            cascading=intervention.cascading,
+        )
+
+    def logits_from_output(self, output):
         import torch
-
-        self.ensure_served()
-
-        if intervention is None:
-            with torch.no_grad():
-                output = self.model.forward(input_ids)
-        else:
-            from jlens.interventions import _editable_layers, _get_editing_context
-
-            edit_layers = _editable_layers(self.model, self.lens, intervention)
-            with torch.no_grad(), _get_editing_context(
-                self.model,
-                self.lens,
-                input_ids,
-                intervention,
-                edit_layers,
-            ):
-                output = self.model.forward(input_ids)
 
         if torch.is_tensor(output):
             hidden = output
@@ -369,6 +399,36 @@ class LensWorker:
         else:
             hidden = output[0]
         return self.model.unembed(hidden[:, -1, :])[0]
+
+    def next_token_logits(self, input_ids, intervention=None, deltas=None):
+        import torch
+
+        self.ensure_served()
+        with torch.no_grad():
+            if deltas is not None:
+                from jlens.interventions import _PrecomputedActivationEditor
+
+                with _PrecomputedActivationEditor(
+                    self.model.layers,
+                    padded_deltas(deltas, input_ids.shape[1]),
+                ):
+                    output = self.model.forward(input_ids)
+            elif intervention is None:
+                output = self.model.forward(input_ids)
+            else:
+                from jlens.interventions import _editable_layers, _get_editing_context
+
+                edit_layers = _editable_layers(self.model, self.lens, intervention)
+                with _get_editing_context(
+                    self.model,
+                    self.lens,
+                    input_ids,
+                    intervention,
+                    edit_layers,
+                ):
+                    output = self.model.forward(input_ids)
+
+        return self.logits_from_output(output)
 
     def generation_input_ids(self, question: str, chat_template: bool):
         import torch
@@ -424,6 +484,93 @@ class LensWorker:
             ),
         }
 
+    def append_token(self, input_ids, token_id: int):
+        import torch
+
+        return torch.cat(
+            [
+                input_ids,
+                torch.tensor(
+                    [[token_id]],
+                    device=input_ids.device,
+                    dtype=input_ids.dtype,
+                ),
+            ],
+            dim=1,
+        )
+
+    def generate_pair(
+        self,
+        question: str,
+        intervention,
+        max_tokens: int,
+        chat_template: bool,
+    ) -> tuple[dict, dict]:
+        import torch
+
+        from jlens.interventions import _editable_layers, _get_baseline_deltas
+
+        prompt_ids = self.generation_input_ids(question, chat_template)
+        intervention = self.freeze_intervention(intervention, prompt_ids.shape[1])
+        deltas = None
+        if not intervention.cascading:
+            deltas = _get_baseline_deltas(
+                self.model,
+                self.lens,
+                prompt_ids,
+                intervention,
+                _editable_layers(self.model, self.lens, intervention),
+            )
+
+        baseline_ids = prompt_ids.clone()
+        edited_ids = prompt_ids.clone()
+        baseline_generated = []
+        edited_generated = []
+        eos_token_id = getattr(self.tokenizer, "eos_token_id", None)
+        eos_ids = set(eos_token_id if isinstance(eos_token_id, list) else [eos_token_id])
+        eos_ids.discard(None)
+        baseline_done = False
+        edited_done = False
+
+        for _ in range(max_tokens):
+            if not baseline_done:
+                baseline_token = int(torch.argmax(self.next_token_logits(baseline_ids)).item())
+                baseline_generated.append(baseline_token)
+                baseline_ids = self.append_token(baseline_ids, baseline_token)
+                baseline_done = baseline_token in eos_ids
+
+            if not edited_done:
+                edited_token = int(
+                    torch.argmax(
+                        self.next_token_logits(
+                            edited_ids,
+                            intervention=intervention if deltas is None else None,
+                            deltas=deltas,
+                        )
+                    ).item()
+                )
+                edited_generated.append(edited_token)
+                edited_ids = self.append_token(edited_ids, edited_token)
+                edited_done = edited_token in eos_ids
+
+            if baseline_done and edited_done:
+                break
+
+        return (
+            {
+                "text": self.tokenizer.decode(
+                    baseline_generated,
+                    clean_up_tokenization_spaces=False,
+                ),
+            },
+            {
+                "text": self.tokenizer.decode(
+                    edited_generated,
+                    clean_up_tokenization_spaces=False,
+                ),
+            },
+        )
+
     @modal.method()
     def generate(
         self,
@@ -442,9 +589,16 @@ class LensWorker:
         self.ensure_served()
         assert mode in {"baseline", "swap", "steer"}
         max_tokens = max(1, int(max_tokens))
-        baseline = self.generate_branch(question, None, max_tokens, chat_template)
         if mode == "baseline":
-            return {"mode": mode, "baseline": baseline}
+            return {
+                "mode": mode,
+                "baseline": self.generate_branch(
+                    question,
+                    None,
+                    max_tokens,
+                    chat_template,
+                ),
+            }
 
         intervention, _, probe_rows = self.build_intervention(
             generation_prompt_text(self.tokenizer, question, chat_template),
@@ -458,15 +612,16 @@ class LensWorker:
             cascading,
         )
 
+        baseline, intervened = self.generate_pair(
+            question,
+            intervention,
+            max_tokens,
+            chat_template,
+        )
         return {
             "mode": mode,
             "baseline": baseline,
-            "intervened": self.generate_branch(
-                question,
-                intervention,
-                max_tokens,
-                chat_template,
-            ),
+            "intervened": intervened,
             "probe_tokens": probe_rows,
             "cascading": bool(cascading),
             "chat_template": bool(chat_template),
