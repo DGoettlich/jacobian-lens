@@ -12,6 +12,7 @@ def page() -> str:
     label { font-weight: 600; }
     input, textarea, button, select { font: inherit; }
     input { width: 360px; }
+    input[type="checkbox"] { width: auto; }
     input.choice { width: 180px; }
     textarea { width: 600px; height: 64px; }
     button { padding: 6px 10px; border: 1px solid #d0d7de; background: white; border-radius: 6px; cursor: pointer; }
@@ -116,6 +117,9 @@ def page() -> str:
     </div>
     <div class="row">
       <label>Strength <input id="strength" class="small" type="number" value="1" min="0" step="0.1"></label>
+      <label>Cascading <input id="cascading" type="checkbox"></label>
+      <label>Layers <input id="layers" value="" placeholder="blank or 6-22"></label>
+      <label>Positions <input id="positions" value="" placeholder="blank, -1, 0,3,-1"></label>
       <button id="swap" disabled>Swap</button>
       <button id="steer" disabled>Steer</button>
     </div>
@@ -363,11 +367,19 @@ async function renderIntervention(mode) {
       source: document.querySelector("#source").value.trim(),
       target: document.querySelector("#target").value.trim(),
       strength: Number(document.querySelector("#strength").value || 1),
+      cascading: document.querySelector("#cascading").checked,
+      layers: document.querySelector("#layers").value.trim(),
+      positions: document.querySelector("#positions").value.trim(),
     });
+    const suffix = [
+      document.querySelector("#cascading").checked ? "cascade" : "",
+      document.querySelector("#layers").value.trim() ? `L=${document.querySelector("#layers").value.trim()}` : "",
+      document.querySelector("#positions").value.trim() ? `P=${document.querySelector("#positions").value.trim()}` : "",
+    ].filter(Boolean).join(", ");
     const name = mode === "swap"
       ? `Swap ${document.querySelector("#source").value.trim()} -> ${document.querySelector("#target").value.trim()}`
       : `Steer ${document.querySelector("#source").value.trim()}`;
-    saveReport(name, data.html);
+    saveReport(suffix ? `${name} (${suffix})` : name, data.html);
     document.querySelector("#status").textContent = "Done";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
@@ -410,6 +422,10 @@ document.querySelector("#model").onchange = scheduleTokenize;
 document.querySelector("#architecture").onchange = scheduleTokenize;
 document.querySelector("#source").oninput = scheduleInterventionCheck;
 document.querySelector("#target").oninput = scheduleInterventionCheck;
+document.querySelector("#strength").oninput = clearInterventionReports;
+document.querySelector("#cascading").onchange = clearInterventionReports;
+document.querySelector("#layers").oninput = clearInterventionReports;
+document.querySelector("#positions").oninput = clearInterventionReports;
 
 ["Paris", "London", "Berlin"].forEach(x => {
   document.querySelector("#choices").appendChild(choiceRow(x));

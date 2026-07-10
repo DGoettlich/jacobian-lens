@@ -59,6 +59,35 @@ def tokenize_choices(tokenizer, question: str, choices: Sequence[str]) -> list[d
     return rows
 
 
+def parse_indices(value: str | None) -> list[int] | None:
+    """Parse a small comma-separated int/range list.
+
+    Blank means None. Examples: "6-22", "0,3,-1", "2,4-6".
+    Negative ranges are intentionally unsupported; use comma-separated
+    negative positions such as "-3,-2,-1" if needed.
+    """
+    if value is None or not value.strip():
+        return None
+
+    out = []
+    for part in value.split(","):
+        item = part.strip()
+        if not item:
+            continue
+        if "-" in item[1:]:
+            left, right = item.split("-", 1)
+            if left.startswith("-") or right.startswith("-"):
+                raise ValueError(f"negative ranges are unsupported: {item!r}")
+            start = int(left)
+            stop = int(right)
+            step = 1 if stop >= start else -1
+            out.extend(range(start, stop + step, step))
+        else:
+            out.append(int(item))
+
+    return list(dict.fromkeys(out)) or None
+
+
 secret_name = os.environ.get("JLENS_HF_TOKEN_SECRET", "HLLM")
 
 image = (
@@ -148,16 +177,6 @@ class LensWorker:
     def render(self, question: str, choices: list[str], active_choice: str | None):
         return self.render_report(question, choices, active_choice, None, "Baseline")
 
-    def intervention_layers(self) -> list[int]:
-        layer_start = int(0.18 * self.model.n_layers)
-        layer_stop = int(0.63 * self.model.n_layers)
-        layers = [
-            layer
-            for layer in self.lens.source_layers
-            if layer_start <= layer <= layer_stop
-        ]
-        return layers or self.lens.source_layers
-
     def render_report(
         self,
         question: str,
@@ -215,6 +234,9 @@ class LensWorker:
         source: str,
         target: str,
         strength: float,
+        layers_text: str,
+        positions_text: str,
+        cascading: bool,
     ):
         import jlens
 
@@ -224,13 +246,15 @@ class LensWorker:
         assert probe_rows[0]["single_token"], "source must be one token in context"
         source_id = int(probe_rows[0]["answer_ids"][0])
 
-        layers = self.intervention_layers()
+        layers = parse_indices(layers_text)
+        positions = parse_indices(positions_text)
         if mode == "steer":
             intervention = jlens.Steer(
                 source_id,
                 float(strength),
                 layers=layers,
-                positions=None,
+                positions=positions,
+                cascading=bool(cascading),
             )
             label = f"Steer {source}"
         else:
@@ -241,7 +265,8 @@ class LensWorker:
                 target_id,
                 strength=float(strength),
                 layers=layers,
-                positions=None,
+                positions=positions,
+                cascading=bool(cascading),
             )
             label = f"Swap {source} -> {target}"
 
@@ -255,6 +280,8 @@ class LensWorker:
         )
         result["probe_tokens"] = probe_rows
         result["layers"] = layers
+        result["positions"] = positions
+        result["cascading"] = bool(cascading)
         return result
 
 
@@ -324,6 +351,9 @@ async def intervene(request: Request):
             body["source"],
             body.get("target", ""),
             float(body.get("strength", 1.0)),
+            body.get("layers", ""),
+            body.get("positions", ""),
+            bool(body.get("cascading", False)),
         )
     )
 
