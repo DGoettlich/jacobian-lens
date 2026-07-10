@@ -42,6 +42,11 @@ def page() -> str:
     .check-title { color: #57606a; font-size: 12px; margin-bottom: 4px; }
     .report-tabs { display: flex; gap: 8px; margin-top: 18px; }
     .report-tabs button.active { border-color: #0969da; color: #0969da; font-weight: 600; }
+    .generation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 12px; }
+    .generation-card { border: 1px solid #d0d7de; border-radius: 6px; padding: 12px; min-height: 120px; }
+    .generation-card h3 { margin: 0 0 8px; font-size: 15px; }
+    .generated-text { white-space: pre-wrap; margin: 0 0 10px; }
+    .generated-tokens { line-height: 1.9; }
     .muted { color: #57606a; }
     iframe { width: 100%; height: 860px; border: 1px solid #d0d7de; margin-top: 18px; }
   </style>
@@ -129,6 +134,20 @@ def page() -> str:
     </div>
   </div>
 
+  <div class="panel">
+    <h2>Generate</h2>
+    <div class="hint">
+      Generation starts from the question only. Source and target are used only for the intervention token IDs.
+    </div>
+    <div class="row">
+      <label>Max tokens <input id="gen-max-tokens" class="small" type="number" value="32" min="1" step="1"></label>
+      <button id="gen-baseline" disabled>Baseline</button>
+      <button id="gen-swap" disabled>Swap</button>
+      <button id="gen-steer" disabled>Steer</button>
+    </div>
+    <div id="generation-output"></div>
+  </div>
+
   <div id="report-tabs" class="report-tabs"></div>
   <iframe id="report"></iframe>
 
@@ -139,6 +158,7 @@ let reports = {};
 let tokenTimer = null;
 let interventionTimer = null;
 let servedLayers = null;
+let generationResult = null;
 
 function esc(s) {
   return String(s)
@@ -264,6 +284,9 @@ document.querySelector("#serve").onclick = async () => {
     document.querySelector("#submit").disabled = false;
     document.querySelector("#swap").disabled = false;
     document.querySelector("#steer").disabled = false;
+    document.querySelector("#gen-baseline").disabled = false;
+    document.querySelector("#gen-swap").disabled = false;
+    document.querySelector("#gen-steer").disabled = false;
     document.querySelector("#status").textContent = "Ready";
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
@@ -278,9 +301,13 @@ document.querySelector("#stop").onclick = async () => {
     document.querySelector("#submit").disabled = true;
     document.querySelector("#swap").disabled = true;
     document.querySelector("#steer").disabled = true;
+    document.querySelector("#gen-baseline").disabled = true;
+    document.querySelector("#gen-swap").disabled = true;
+    document.querySelector("#gen-steer").disabled = true;
     document.querySelector("#status").textContent = "Stopped";
     servedLayers = null;
     document.querySelector("#layer-hint").textContent = "Serve a lens to see fitted layers.";
+    clearGeneration();
   } catch (err) {
     document.querySelector("#status").textContent = err.message;
   }
@@ -337,6 +364,11 @@ function clearInterventionReports() {
     }
   }
   renderReportTabs();
+}
+
+function clearGeneration() {
+  generationResult = null;
+  document.querySelector("#generation-output").innerHTML = "";
 }
 
 function showReport(name) {
@@ -397,8 +429,65 @@ async function renderIntervention(mode) {
   }
 }
 
+function generatedBranchHtml(title, branch) {
+  const tokens = branch.tokens.map((t, i) => {
+    const text = tokenMode === "ids" ? t.id : esc(t.text);
+    return `<span class="tok a${i % 5}">${text}</span>`;
+  }).join("");
+  return `
+    <div class="generation-card">
+      <h3>${esc(title)}</h3>
+      <div class="generated-text">${esc(branch.text || "")}</div>
+      <div class="generated-tokens">${tokens}</div>
+    </div>
+  `;
+}
+
+function renderGeneration() {
+  const output = document.querySelector("#generation-output");
+  if (!generationResult) {
+    output.innerHTML = "";
+    return;
+  }
+  if (generationResult.mode === "baseline") {
+    output.innerHTML = generatedBranchHtml("Baseline", generationResult.baseline);
+    return;
+  }
+  output.innerHTML = `
+    <div class="generation-grid">
+      ${generatedBranchHtml("Baseline", generationResult.baseline)}
+      ${generatedBranchHtml("Intervened", generationResult.intervened)}
+    </div>
+  `;
+}
+
+async function generateContinuation(mode) {
+  const label = mode === "baseline" ? "baseline" : mode;
+  document.querySelector("#status").textContent = `Generating ${label}`;
+  try {
+    generationResult = await post("/api/generate", {
+      ...fullBody(),
+      mode,
+      source: document.querySelector("#source").value.trim(),
+      target: document.querySelector("#target").value.trim(),
+      strength: Number(document.querySelector("#strength").value || 1),
+      cascading: document.querySelector("#cascading").checked,
+      layers: document.querySelector("#layers").value.trim(),
+      positions: document.querySelector("#positions").value.trim(),
+      max_tokens: Number(document.querySelector("#gen-max-tokens").value || 32),
+    });
+    renderGeneration();
+    document.querySelector("#status").textContent = "Done";
+  } catch (err) {
+    document.querySelector("#status").textContent = err.message;
+  }
+}
+
 document.querySelector("#swap").onclick = () => renderIntervention("swap");
 document.querySelector("#steer").onclick = () => renderIntervention("steer");
+document.querySelector("#gen-baseline").onclick = () => generateContinuation("baseline");
+document.querySelector("#gen-swap").onclick = () => generateContinuation("swap");
+document.querySelector("#gen-steer").onclick = () => generateContinuation("steer");
 
 document.querySelector("#submit").onclick = async () => {
   document.querySelector("#status").textContent = "Running";
@@ -426,17 +515,46 @@ document.querySelector("#mode").onclick = () => {
   document.querySelector("#mode").textContent = tokenMode === "text" ? "Token IDs" : "Text";
   tokenize();
   checkInterventionTokens();
+  renderGeneration();
 };
 
-document.querySelector("#question").oninput = scheduleTokenize;
-document.querySelector("#model").onchange = scheduleTokenize;
-document.querySelector("#architecture").onchange = scheduleTokenize;
-document.querySelector("#source").oninput = scheduleInterventionCheck;
-document.querySelector("#target").oninput = scheduleInterventionCheck;
-document.querySelector("#strength").oninput = clearInterventionReports;
-document.querySelector("#cascading").onchange = clearInterventionReports;
-document.querySelector("#layers").oninput = clearInterventionReports;
-document.querySelector("#positions").oninput = clearInterventionReports;
+document.querySelector("#question").oninput = () => {
+  clearGeneration();
+  scheduleTokenize();
+};
+document.querySelector("#model").onchange = () => {
+  clearGeneration();
+  scheduleTokenize();
+};
+document.querySelector("#architecture").onchange = () => {
+  clearGeneration();
+  scheduleTokenize();
+};
+document.querySelector("#source").oninput = () => {
+  clearGeneration();
+  scheduleInterventionCheck();
+};
+document.querySelector("#target").oninput = () => {
+  clearGeneration();
+  scheduleInterventionCheck();
+};
+document.querySelector("#strength").oninput = () => {
+  clearGeneration();
+  clearInterventionReports();
+};
+document.querySelector("#cascading").onchange = () => {
+  clearGeneration();
+  clearInterventionReports();
+};
+document.querySelector("#layers").oninput = () => {
+  clearGeneration();
+  clearInterventionReports();
+};
+document.querySelector("#positions").oninput = () => {
+  clearGeneration();
+  clearInterventionReports();
+};
+document.querySelector("#gen-max-tokens").oninput = clearGeneration;
 
 ["Paris", "London", "Berlin"].forEach(x => {
   document.querySelector("#choices").appendChild(choiceRow(x));

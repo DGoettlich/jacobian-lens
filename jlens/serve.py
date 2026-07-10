@@ -284,6 +284,137 @@ class LensWorker:
         result["cascading"] = bool(cascading)
         return result
 
+    def next_token_logits(self, input_ids, intervention):
+        import torch
+
+        assert self.model is not None
+        assert self.lens is not None
+
+        if intervention is None:
+            with torch.no_grad():
+                output = self.model.forward(input_ids)
+        else:
+            from jlens.interventions import _get_editing_context, _layers
+
+            edit_layers = _layers(self.model, self.lens, intervention.layers)
+            with torch.no_grad(), _get_editing_context(
+                self.model,
+                self.lens,
+                input_ids,
+                intervention,
+                edit_layers,
+            ):
+                output = self.model.forward(input_ids)
+
+        if torch.is_tensor(output):
+            hidden = output
+        elif hasattr(output, "last_hidden_state"):
+            hidden = output.last_hidden_state
+        else:
+            hidden = output[0]
+        return self.model.unembed(hidden[:, -1, :])[0]
+
+    def generate_branch(self, question: str, intervention, max_tokens: int) -> dict:
+        import torch
+
+        assert self.model is not None
+        assert self.tokenizer is not None
+
+        input_ids = self.model.encode(question, max_length=512)
+        generated_ids = []
+        eos_token_id = self.tokenizer.eos_token_id
+        eos_ids = set(eos_token_id if isinstance(eos_token_id, list) else [eos_token_id])
+        eos_ids.discard(None)
+
+        for _ in range(max_tokens):
+            logits = self.next_token_logits(input_ids, intervention)
+            token_id = int(torch.argmax(logits).item())
+            generated_ids.append(token_id)
+            next_id = torch.tensor(
+                [[token_id]],
+                device=input_ids.device,
+                dtype=input_ids.dtype,
+            )
+            input_ids = torch.cat([input_ids, next_id], dim=1)
+            if token_id in eos_ids:
+                break
+
+        return {
+            "text": self.tokenizer.decode(
+                generated_ids,
+                clean_up_tokenization_spaces=False,
+            ),
+            "token_ids": generated_ids,
+            "tokens": [
+                {
+                    "id": token_id,
+                    "text": self.tokenizer.decode(
+                        [token_id],
+                        clean_up_tokenization_spaces=False,
+                    ),
+                }
+                for token_id in generated_ids
+            ],
+        }
+
+    @modal.method()
+    def generate(
+        self,
+        question: str,
+        mode: str,
+        source: str,
+        target: str,
+        strength: float,
+        layers_text: str,
+        positions_text: str,
+        cascading: bool,
+        max_tokens: int,
+    ):
+        import jlens
+
+        assert mode in {"baseline", "swap", "steer"}
+        max_tokens = max(1, int(max_tokens))
+        baseline = self.generate_branch(question, None, max_tokens)
+        if mode == "baseline":
+            return {"mode": mode, "baseline": baseline}
+
+        probe_choices = [source] if mode == "steer" else [source, target]
+        probe_rows = tokenize_choices(self.tokenizer, question, probe_choices)
+        assert probe_rows[0]["single_token"], "source must be one token in context"
+        source_id = int(probe_rows[0]["answer_ids"][0])
+
+        layers = parse_indices(layers_text)
+        positions = parse_indices(positions_text)
+        if mode == "steer":
+            intervention = jlens.Steer(
+                source_id,
+                float(strength),
+                layers=layers,
+                positions=positions,
+                cascading=bool(cascading),
+            )
+        else:
+            assert probe_rows[1]["single_token"], "target must be one token in context"
+            target_id = int(probe_rows[1]["answer_ids"][0])
+            intervention = jlens.Swap(
+                source_id,
+                target_id,
+                strength=float(strength),
+                layers=layers,
+                positions=positions,
+                cascading=bool(cascading),
+            )
+
+        return {
+            "mode": mode,
+            "baseline": baseline,
+            "intervened": self.generate_branch(question, intervention, max_tokens),
+            "probe_tokens": probe_rows,
+            "layers": layers,
+            "positions": positions,
+            "cascading": bool(cascading),
+        }
+
 
 def worker(body: dict):
     return LensWorker(
@@ -354,6 +485,24 @@ async def intervene(request: Request):
             body.get("layers", ""),
             body.get("positions", ""),
             bool(body.get("cascading", False)),
+        )
+    )
+
+
+@api.post("/api/generate")
+async def generate(request: Request):
+    body = await request.json()
+    return JSONResponse(
+        await worker(body).generate.remote.aio(
+            body["question"],
+            body["mode"],
+            body.get("source", ""),
+            body.get("target", ""),
+            float(body.get("strength", 1.0)),
+            body.get("layers", ""),
+            body.get("positions", ""),
+            bool(body.get("cascading", False)),
+            int(body.get("max_tokens", 32)),
         )
     )
 
