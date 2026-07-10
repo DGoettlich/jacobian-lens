@@ -154,7 +154,7 @@ def page() -> str:
       </div>
       <div id="steer-rows"></div>
       <div class="row">
-        <button id="add-steer">+ steer</button>
+        <button id="add-steer">+ add token</button>
         <button id="steer" disabled>Steer</button>
       </div>
     </div>

@@ -308,9 +308,9 @@ class LensWorker:
             with torch.no_grad():
                 output = self.model.forward(input_ids)
         else:
-            from jlens.interventions import _get_editing_context, _layers
+            from jlens.interventions import _editable_layers, _get_editing_context
 
-            edit_layers = _layers(self.model, self.lens, intervention.layers)
+            edit_layers = _editable_layers(self.model, self.lens, intervention)
             with torch.no_grad(), _get_editing_context(
                 self.model,
                 self.lens,
