@@ -259,22 +259,21 @@ class LensWorker:
         assert mode in {"swap", "steer"}
         probe_choices = [source] if mode == "steer" else [source, target]
         probe_rows = tokenize_choices(self.tokenizer, question, probe_choices)
-        assert probe_rows[0]["single_token"], "source must be one token in context"
+        if not probe_rows[0]["single_token"]:
+            raise ValueError("source must be one token in context")
         source_id = int(probe_rows[0]["answer_ids"][0])
 
         layers = parse_indices(layers_text)
         positions = parse_indices(positions_text)
         if mode == "steer":
             intervention = jlens.Steer(
-                source_id,
-                float(strength),
-                layers=layers,
-                positions=positions,
+                [(source_id, float(strength), layers, positions)],
                 cascading=bool(cascading),
             )
             label = f"Steer {source}"
         else:
-            assert probe_rows[1]["single_token"], "target must be one token in context"
+            if not probe_rows[1]["single_token"]:
+                raise ValueError("target must be one token in context")
             target_id = int(probe_rows[1]["answer_ids"][0])
             intervention = jlens.Swap(
                 source_id,
@@ -397,6 +396,7 @@ class LensWorker:
         mode: str,
         source: str,
         target: str,
+        steer_specs: list[dict],
         strength: float,
         layers_text: str,
         positions_text: str,
@@ -413,31 +413,50 @@ class LensWorker:
         if mode == "baseline":
             return {"mode": mode, "baseline": baseline}
 
-        probe_choices = [source] if mode == "steer" else [source, target]
         probe_question = generation_prompt_text(self.tokenizer, question, chat_template)
-        probe_rows = tokenize_choices(self.tokenizer, probe_question, probe_choices)
-        assert probe_rows[0]["single_token"], "source must be one token in context"
-        source_id = int(probe_rows[0]["answer_ids"][0])
-
-        layers = parse_indices(layers_text)
-        positions = parse_indices(positions_text)
         if mode == "steer":
+            if not steer_specs:
+                steer_specs = [
+                    {
+                        "token": source,
+                        "strength": strength,
+                        "layers": layers_text,
+                        "positions": positions_text,
+                    }
+                ]
+            probe_choices = [spec["token"] for spec in steer_specs]
+            probe_rows = tokenize_choices(self.tokenizer, probe_question, probe_choices)
+            specs = []
+            for spec, row in zip(steer_specs, probe_rows, strict=True):
+                if not row["single_token"]:
+                    raise ValueError(f"{spec['token']} must be one token in context")
+                specs.append(
+                    (
+                        int(row["answer_ids"][0]),
+                        float(spec.get("strength", 1.0)),
+                        parse_indices(spec.get("layers", "")),
+                        parse_indices(spec.get("positions", "")),
+                    )
+                )
             intervention = jlens.Steer(
-                source_id,
-                float(strength),
-                layers=layers,
-                positions=positions,
+                specs,
                 cascading=bool(cascading),
             )
         else:
-            assert probe_rows[1]["single_token"], "target must be one token in context"
+            probe_choices = [source, target]
+            probe_rows = tokenize_choices(self.tokenizer, probe_question, probe_choices)
+            if not probe_rows[0]["single_token"]:
+                raise ValueError("source must be one token in context")
+            if not probe_rows[1]["single_token"]:
+                raise ValueError("target must be one token in context")
+            source_id = int(probe_rows[0]["answer_ids"][0])
             target_id = int(probe_rows[1]["answer_ids"][0])
             intervention = jlens.Swap(
                 source_id,
                 target_id,
                 strength=float(strength),
-                layers=layers,
-                positions=positions,
+                layers=parse_indices(layers_text),
+                positions=parse_indices(positions_text),
                 cascading=bool(cascading),
             )
 
@@ -451,8 +470,6 @@ class LensWorker:
                 chat_template,
             ),
             "probe_tokens": probe_rows,
-            "layers": layers,
-            "positions": positions,
             "cascading": bool(cascading),
             "chat_template": bool(chat_template),
         }
@@ -546,6 +563,7 @@ async def generate(request: Request):
             body["mode"],
             body.get("source", ""),
             body.get("target", ""),
+            body.get("steer_specs", []),
             float(body.get("strength", 1.0)),
             body.get("layers", ""),
             body.get("positions", ""),

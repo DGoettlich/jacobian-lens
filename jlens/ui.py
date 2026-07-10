@@ -38,6 +38,10 @@ def page() -> str:
     input.small { width: 72px; }
     .intervention-row { display: grid; grid-template-columns: 180px 1fr; gap: 12px; align-items: start; margin: 10px 0; }
     .intervention-row input { width: 170px; }
+    .intervention-box { margin-top: 14px; padding: 12px; border: 1px solid #d0d7de; border-radius: 6px; }
+    .intervention-box h3 { margin: 0 0 8px; font-size: 15px; }
+    .steer-row { display: grid; grid-template-columns: 150px 90px 160px 160px 40px 1fr; gap: 8px; align-items: start; margin: 8px 0; }
+    .steer-row input { width: 100%; box-sizing: border-box; }
     .token-check { line-height: 1.9; min-height: 38px; padding: 8px; background: #f6f8fa; border-radius: 6px; }
     .check-title { color: #57606a; font-size: 12px; margin-bottom: 4px; }
     .report-tabs { display: flex; gap: 8px; margin-top: 18px; }
@@ -112,27 +116,38 @@ def page() -> str:
       Source and target are only tokenization checks for <code>question + " " + token</code>.
       Swap and Steer generate from the question alone and show baseline against intervened output.
     </div>
-    <div class="intervention-row">
-      <label>Source token <input id="source" value="Paris"></label>
-      <div id="source-check" class="token-check"></div>
-    </div>
-    <div class="intervention-row">
-      <label>Target token <input id="target" value="London"></label>
-      <div id="target-check" class="token-check"></div>
-    </div>
     <div class="row">
-      <label>Strength <input id="strength" class="small" type="number" value="1" min="0" step="0.1"></label>
       <label>Cascading <input id="cascading" type="checkbox"></label>
-      <div class="field">
-        <label>Layers</label>
-        <input id="layers" value="" placeholder="blank = all fitted">
-        <div id="layer-hint" class="muted">Serve a lens to see fitted layers.</div>
-      </div>
-      <label>Positions <input id="positions" value="" placeholder="blank, -1, 0,3,-1"></label>
       <label>Max tokens <input id="gen-max-tokens" class="small" type="number" value="32" min="1" step="1"></label>
       <label>Chat template <input id="chat-template" type="checkbox"></label>
-      <button id="swap" disabled>Swap</button>
-      <button id="steer" disabled>Steer</button>
+      <span id="layer-hint" class="muted">Serve a lens to see fitted layers.</span>
+    </div>
+
+    <div class="intervention-box">
+      <h3>Swap</h3>
+      <div class="intervention-row">
+        <label>Source token <input id="source" value="Paris"></label>
+        <div id="source-check" class="token-check"></div>
+      </div>
+      <div class="intervention-row">
+        <label>Target token <input id="target" value="London"></label>
+        <div id="target-check" class="token-check"></div>
+      </div>
+      <div class="row">
+        <label>Strength <input id="strength" class="small" type="number" value="1" min="0" step="0.1"></label>
+        <label>Layers <input id="layers" value="" placeholder="blank = all fitted"></label>
+        <label>Positions <input id="positions" value="" placeholder="blank, -1, 0,3,-1"></label>
+        <button id="swap" disabled>Swap</button>
+      </div>
+    </div>
+
+    <div class="intervention-box">
+      <h3>Steer</h3>
+      <div id="steer-rows"></div>
+      <div class="row">
+        <button id="add-steer">+ steer</button>
+        <button id="steer" disabled>Steer</button>
+      </div>
     </div>
     <div id="generation-output"></div>
   </div>
@@ -222,6 +237,42 @@ function choiceRow(value) {
   return div;
 }
 
+function steerRow(value = "") {
+  const div = document.createElement("div");
+  div.className = "steer-row";
+  div.innerHTML = `
+    <input class="steer-token" value="${esc(value)}" placeholder="token">
+    <input class="steer-strength" type="number" value="1" step="0.1">
+    <input class="steer-layers" value="" placeholder="layers">
+    <input class="steer-positions" value="" placeholder="positions">
+    <button class="remove-steer">x</button>
+    <div class="token-check steer-check"></div>
+  `;
+  div.querySelector(".remove-steer").onclick = () => {
+    div.remove();
+    clearGeneration();
+    scheduleInterventionCheck();
+  };
+  div.querySelectorAll("input").forEach(input => {
+    input.oninput = () => {
+      clearGeneration();
+      scheduleInterventionCheck();
+    };
+  });
+  return div;
+}
+
+function steerSpecs() {
+  return [...document.querySelectorAll(".steer-row")]
+    .map(row => ({
+      token: row.querySelector(".steer-token").value.trim(),
+      strength: Number(row.querySelector(".steer-strength").value || 1),
+      layers: row.querySelector(".steer-layers").value.trim(),
+      positions: row.querySelector(".steer-positions").value.trim(),
+    }))
+    .filter(spec => spec.token);
+}
+
 function updateFocusChoices() {
   const select = document.querySelector("#active-choice");
   const selected = select.value;
@@ -281,6 +332,12 @@ document.querySelector("#add").onclick = () => {
   updateFocusChoices();
 };
 
+document.querySelector("#add-steer").onclick = () => {
+  document.querySelector("#steer-rows").appendChild(steerRow(""));
+  clearGeneration();
+  scheduleInterventionCheck();
+};
+
 document.querySelector("#serve").onclick = async () => {
   document.querySelector("#status").textContent = "Loading model/lens on Modal. First 4B load can take a few minutes.";
   try {
@@ -324,7 +381,7 @@ document.querySelector("#stop").onclick = async () => {
   }
 };
 
-async function checkInterventionTokens() {
+async function checkSwapTokens() {
   const source = document.querySelector("#source").value.trim();
   const target = document.querySelector("#target").value.trim();
   const terms = [];
@@ -350,10 +407,34 @@ async function checkInterventionTokens() {
   });
 }
 
+async function checkSteerTokens() {
+  const rows = [...document.querySelectorAll(".steer-row")];
+  const specs = steerSpecs();
+  rows.forEach(row => {
+    row.querySelector(".steer-check").innerHTML = "";
+  });
+  if (!specs.length) return;
+
+  const data = await post(
+    "/api/tokenize",
+    tokenizeBody(specs.map(spec => spec.token), document.querySelector("#chat-template").checked),
+  );
+  let idx = 0;
+  rows.forEach(row => {
+    const token = row.querySelector(".steer-token").value.trim();
+    if (!token) return;
+    row.querySelector(".steer-check").innerHTML = tokenizationHtml(data.rows[idx]);
+    idx += 1;
+  });
+}
+
 function scheduleInterventionCheck() {
   clearInterventionReports();
   clearTimeout(interventionTimer);
-  interventionTimer = setTimeout(checkInterventionTokens, 250);
+  interventionTimer = setTimeout(() => {
+    checkSwapTokens();
+    checkSteerTokens();
+  }, 250);
 }
 
 function clearReports() {
@@ -451,6 +532,7 @@ async function generateContinuation(mode) {
       mode,
       source: document.querySelector("#source").value.trim(),
       target: document.querySelector("#target").value.trim(),
+      steer_specs: steerSpecs(),
       strength: Number(document.querySelector("#strength").value || 1),
       cascading: document.querySelector("#cascading").checked,
       layers: document.querySelector("#layers").value.trim(),
@@ -493,7 +575,8 @@ document.querySelector("#mode").onclick = () => {
   tokenMode = tokenMode === "text" ? "ids" : "text";
   document.querySelector("#mode").textContent = tokenMode === "text" ? "Token IDs" : "Text";
   tokenize();
-  checkInterventionTokens();
+  checkSwapTokens();
+  checkSteerTokens();
   renderGeneration();
 };
 
@@ -542,6 +625,7 @@ document.querySelector("#chat-template").onchange = () => {
 ["Paris", "London", "Berlin"].forEach(x => {
   document.querySelector("#choices").appendChild(choiceRow(x));
 });
+document.querySelector("#steer-rows").appendChild(steerRow("Paris"));
 updateFocusChoices();
 scheduleTokenize();
 </script>
