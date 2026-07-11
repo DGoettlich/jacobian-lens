@@ -21,7 +21,12 @@ Repository = "https://github.com/anthropics/jacobian-lens"
 Paper = "https://transformer-circuits.pub/2026/workspace/index.html"
 
 [project.optional-dependencies]
-dev = ["pytest", "ruff", "datasets"]
+dev = ["pytest", "ruff"]
+examples = ["datasets"]
+ui = ["modal", "fastapi[standard]"]
+
+[project.scripts]
+jlens = "jlens.serve:main"
 
 [tool.ruff]
 line-length = 88

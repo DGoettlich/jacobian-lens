@@ -25,6 +25,7 @@ import numpy as np
 import torch
 
 from jlens.hooks import ActivationRecorder
+from jlens.interventions import Intervention, _editable_layers, _get_editing_context
 from jlens.lens import JacobianLens
 from jlens.protocol import LensModel
 
@@ -203,6 +204,7 @@ def compute_slice(
     last_n_tokens: int | None = None,
     max_seq_len: int = 512,
     mask_display: bool = False,
+    intervention: Intervention | None = None,
 ) -> SliceData:
     """Compute the position x layer lens slice for ``prompt``.
 
@@ -223,6 +225,8 @@ def compute_slice(
             shows the whole prompt and labels positions with their absolute
             indices. ``None`` (default) renders every position.
         max_seq_len: Truncate the prompt to this many tokens.
+        intervention: Optional J-lens intervention to apply during a second
+            forward pass before recording the activations used for this slice.
     """
     tokenizer = model.tokenizer
     pinned_token_ids = set(pinned_token_ids or ())
@@ -248,9 +252,29 @@ def compute_slice(
         for t in context_token_ids
     ]
 
-    with ActivationRecorder(model.layers, at=layers) as recorder:
-        model.forward(input_ids)
-        activations = {layer: recorder.activations[layer].detach() for layer in layers}
+    if intervention is None:
+        with ActivationRecorder(model.layers, at=layers) as recorder:
+            model.forward(input_ids)
+            activations = {
+                layer: recorder.activations[layer].detach() for layer in layers
+            }
+    else:
+        edit_layers = _editable_layers(model, lens, intervention)
+
+        with _get_editing_context(
+            model,
+            lens,
+            input_ids,
+            intervention,
+            edit_layers,
+        ), ActivationRecorder(
+            model.layers,
+            at=layers,
+        ) as recorder:
+            model.forward(input_ids)
+            activations = {
+                layer: recorder.activations[layer].detach() for layer in layers
+            }
 
     def lens_logits(layer: int) -> torch.Tensor:
         residual = activations[layer][0, start:].float()
