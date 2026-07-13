@@ -365,8 +365,15 @@ def run_intervention(
     prompt: str,
     intervention: Intervention,
     max_seq_len: int,
+    *,
+    return_position_logits: PositionSpec = None,
 ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
-    """run one forward pass with an intervention installed."""
+    """run one forward pass with an intervention installed.
+
+    ``return_position_logits`` overrides which positions appear in the returned
+    logits without changing the positions edited by ``intervention``. ``None``
+    preserves the original behavior of returning logits at edited positions.
+    """
     edit_layers = _editable_layers(model, lens, intervention)
     input_ids = model.encode(prompt, max_length=max_seq_len)
     if input_ids.shape[0] != 1:
@@ -381,11 +388,16 @@ def run_intervention(
         model.forward(input_ids)
         activations = {layer: act.detach() for layer, act in recorder.activations.items()}
 
+    positions = (
+        _readout_positions_for_intervention(intervention, input_ids.shape[1])
+        if return_position_logits is None
+        else _normalize_position_spec(return_position_logits, input_ids.shape[1])
+    )
     lens_logits, model_logits = lens._readout_activations(
         model,
         activations,
         edit_layers,
-        _readout_positions_for_intervention(intervention, input_ids.shape[1]),
+        positions,
         use_jacobian=True,
     )
     return lens_logits, model_logits, input_ids

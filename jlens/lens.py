@@ -152,10 +152,15 @@ class JacobianLens:
         prompt: str,
         specs: Sequence[SteerSpec],
         *,
+        return_position_logits: int | Sequence[int] | None = None,
         cascading: bool = False,
         max_seq_len: int = 512,
     ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
         """run ``prompt`` with one or more token pushes.
+
+        ``return_position_logits`` selects the positions returned in the logits
+        tensors without changing where ``specs`` apply their edits. by default,
+        logits are returned at the edited positions as before.
 
         returns the same ``(lens_logits, model_logits, input_ids)`` tuple as
         :meth:`apply`, computed from the intervened forward pass.
@@ -168,6 +173,7 @@ class JacobianLens:
             prompt,
             Steer(specs, cascading=cascading),
             max_seq_len,
+            return_position_logits=return_position_logits,
         )
 
     def swap(
@@ -180,15 +186,18 @@ class JacobianLens:
         strength: float = 1.0,
         layers: Sequence[int] | None = None,
         positions: Sequence[int] | None = None,
+        return_position_logits: int | Sequence[int] | None = None,
         cascading: bool = False,
         max_seq_len: int = 512,
     ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
         """run ``prompt`` while moving source-token weight onto target.
 
         ``strength=1`` applies the full source-to-target edit. smaller values
-        make the edit partial; larger values push harder. returns the same
-        ``(lens_logits, model_logits, input_ids)`` tuple as :meth:`apply`,
-        computed from the intervened forward pass.
+        make the edit partial; larger values push harder.
+        ``return_position_logits`` selects returned logit positions independently
+        of ``positions``; by default, logits are returned at the edited positions
+        as before. returns the same ``(lens_logits, model_logits, input_ids)``
+        tuple as :meth:`apply`, computed from the intervened forward pass.
         """
         from jlens.interventions import Swap, run_intervention
 
@@ -205,6 +214,7 @@ class JacobianLens:
                 cascading=cascading,
             ),
             max_seq_len,
+            return_position_logits=return_position_logits,
         )
 
     @torch.no_grad()
