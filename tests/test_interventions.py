@@ -67,6 +67,49 @@ def test_steer_zero_strength_leaves_logits_unchanged():
         torch.testing.assert_close(intervened_logits, baseline_logits)
 
 
+def test_steer_can_read_out_a_position_other_than_the_edit():
+    model, lens = _model_and_lens()
+    edit_position = 2
+
+    _, answer_logits, _ = lens.apply(
+        model,
+        PROMPT,
+        layers=[1],
+        positions=[-1],
+        max_seq_len=64,
+    )
+    _, intervened_answer_logits, _ = lens.steer(
+        model,
+        PROMPT,
+        [(7, 0.0, [1], [edit_position])],
+        return_position_logits=[-1],
+        max_seq_len=64,
+    )
+
+    torch.testing.assert_close(intervened_answer_logits, answer_logits)
+
+
+def test_steer_defaults_to_reading_out_the_edited_position():
+    model, lens = _model_and_lens()
+    edit_position = 2
+
+    _, baseline_logits, _ = lens.apply(
+        model,
+        PROMPT,
+        layers=[1],
+        positions=[edit_position],
+        max_seq_len=64,
+    )
+    _, intervened_logits, _ = lens.steer(
+        model,
+        PROMPT,
+        [(7, 0.0, [1], [edit_position])],
+        max_seq_len=64,
+    )
+
+    torch.testing.assert_close(intervened_logits, baseline_logits)
+
+
 def test_steer_changes_logits():
     model, lens = _model_and_lens()
 
@@ -126,6 +169,32 @@ def test_swap_delta_noops_once_target_is_larger():
         _swap_delta(residual, source_vector, target_vector),
         torch.zeros_like(residual),
     )
+
+
+def test_swap_can_read_out_a_position_other_than_the_edit():
+    model, lens = _model_and_lens()
+    edit_position = 2
+
+    _, answer_logits, _ = lens.apply(
+        model,
+        PROMPT,
+        layers=[1],
+        positions=[-1],
+        max_seq_len=64,
+    )
+    _, intervened_answer_logits, _ = lens.swap(
+        model,
+        PROMPT,
+        source_token_id=7,
+        target_token_id=8,
+        strength=0.0,
+        layers=[1],
+        positions=[edit_position],
+        return_position_logits=[-1],
+        max_seq_len=64,
+    )
+
+    torch.testing.assert_close(intervened_answer_logits, answer_logits)
 
 
 def test_bad_layer_rejected():
