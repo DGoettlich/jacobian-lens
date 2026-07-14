@@ -5,8 +5,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -106,6 +105,72 @@ class Swap:
 Intervention = Steer | Swap
 
 
+class InterventionEditor:
+    """Install one intervention while model forward passes run.
+
+    Registers editing hooks on ``__enter__`` and removes them on ``__exit__``.
+    Non-cascading interventions are computed from one clean forward pass before
+    the hooks are installed.
+
+    Args:
+        model: Model whose residual blocks will be edited.
+        lens: Fitted lens used to construct intervention directions.
+        input_ids: Input used to precompute non-cascading edits.
+        intervention: Steering or swapping operation to install.
+    """
+
+    def __init__(
+        self,
+        model: LensModel,
+        lens: JacobianLens,
+        input_ids: torch.Tensor,
+        intervention: Intervention,
+    ) -> None:
+        if input_ids.shape[0] != 1:
+            raise ValueError("interventions require batch size 1")
+
+        self._model = model
+        self._lens = lens
+        self._input_ids = input_ids
+        self._intervention = intervention
+        self._editable_layers = _editable_layers(model, lens, intervention)
+        self._editor: _ActivationEditor | _PrecomputedActivationEditor | None = None
+
+    def __enter__(self) -> InterventionEditor:
+        """install the configured editing hooks."""
+        # cascading edits use the values produced by earlier edited layers.
+        if self._intervention.cascading:
+            editor: _ActivationEditor | _PrecomputedActivationEditor = (
+                _ActivationEditor(
+                    self._model.layers,
+                    self._model,
+                    self._lens,
+                    self._intervention,
+                    self._editable_layers,
+                )
+            )
+        else:
+            # non-cascading edits stay fixed to values from the clean run.
+            deltas = _get_baseline_deltas(
+                self._model,
+                self._lens,
+                self._input_ids,
+                self._intervention,
+                self._editable_layers,
+            )
+            editor = _PrecomputedActivationEditor(self._model.layers, deltas)
+
+        editor.__enter__()
+        self._editor = editor
+        return self
+
+    def __exit__(self, *exc) -> None:
+        """remove every installed editing hook."""
+        assert self._editor is not None
+        self._editor.__exit__(*exc)
+        self._editor = None
+
+
 class _ActivationEditor:
     """edit the live stream during a forward pass."""
 
@@ -126,6 +191,7 @@ class _ActivationEditor:
 
     def _make_hook(self, layer: int) -> Callable[..., torch.Tensor | tuple]:
         """build the hook that edits this layer as it runs."""
+
         def hook(module: nn.Module, inputs, output):
             """apply the edit to this layer output."""
             hidden = output if torch.is_tensor(output) else output[0]
@@ -133,7 +199,7 @@ class _ActivationEditor:
                 raise ValueError("interventions require batch size 1")
 
             edited = hidden.clone()
-            # use the stream as it exists now, including earlier edited layers.
+            # include changes made by earlier layers when computing this edit.
             residuals = hidden[0].float()
             scale = residuals.norm(dim=-1).mean().clamp_min(1e-6)
 
@@ -189,6 +255,7 @@ class _PrecomputedActivationEditor:
 
     def _make_hook(self, layer: int) -> Callable[..., torch.Tensor | tuple]:
         """build the hook that adds a fixed layer delta."""
+
         def hook(module: nn.Module, inputs, output):
             """add the precomputed edit to this layer output."""
             hidden = output if torch.is_tensor(output) else output[0]
@@ -374,19 +441,22 @@ def run_intervention(
     logits without changing the positions edited by ``intervention``. ``None``
     preserves the original behavior of returning logits at edited positions.
     """
-    edit_layers = _editable_layers(model, lens, intervention)
     input_ids = model.encode(prompt, max_length=max_seq_len)
-    if input_ids.shape[0] != 1:
-        raise ValueError("interventions require batch size 1")
+    editor = InterventionEditor(model, lens, input_ids, intervention)
 
     final_layer = model.n_layers - 1
-    with torch.no_grad(), _get_editing_context(
-        model, lens, input_ids, intervention, edit_layers
-    ), ActivationRecorder(
-        model.layers, at=sorted({*edit_layers, final_layer})
-    ) as recorder:
+    # record edited layers and the final layer during the same forward pass.
+    with (
+        torch.no_grad(),
+        editor,
+        ActivationRecorder(
+            model.layers, at=sorted({*editor._editable_layers, final_layer})
+        ) as recorder,
+    ):
         model.forward(input_ids)
-        activations = {layer: act.detach() for layer, act in recorder.activations.items()}
+        activations = {
+            layer: act.detach() for layer, act in recorder.activations.items()
+        }
 
     positions = (
         _readout_positions_for_intervention(intervention, input_ids.shape[1])
@@ -396,29 +466,11 @@ def run_intervention(
     lens_logits, model_logits = lens._readout_activations(
         model,
         activations,
-        edit_layers,
+        editor._editable_layers,
         positions,
         use_jacobian=True,
     )
     return lens_logits, model_logits, input_ids
-
-
-@contextmanager
-def _get_editing_context(
-    model: LensModel,
-    lens: JacobianLens,
-    input_ids: torch.Tensor,
-    intervention: Intervention,
-    edit_layers: Sequence[int],
-) -> Iterator[None]:
-    """choose the live or precomputed edit path."""
-    if intervention.cascading:
-        with _ActivationEditor(model.layers, model, lens, intervention, edit_layers):
-            yield
-    else:
-        deltas = _get_baseline_deltas(model, lens, input_ids, intervention, edit_layers)
-        with _PrecomputedActivationEditor(model.layers, deltas):
-            yield
 
 
 def _get_baseline_deltas(
@@ -429,7 +481,7 @@ def _get_baseline_deltas(
     edit_layers: Sequence[int],
 ) -> dict[int, torch.Tensor]:
     """compute fixed edits from a clean forward pass."""
-    # for non-cascading runs, compute every edit from the clean stream once.
+    # compute from the unchanged model so later edits cannot affect these values.
     with ActivationRecorder(model.layers, at=edit_layers) as recorder:
         model.forward(input_ids)
         activations = {
@@ -476,7 +528,9 @@ def _editable_layers(
             else list(intervention.layers)
         )
 
-    out_of_range = sorted(layer for layer in selected if not 0 <= layer < model.n_layers)
+    out_of_range = sorted(
+        layer for layer in selected if not 0 <= layer < model.n_layers
+    )
     unknown = sorted(set(selected) - set(lens.source_layers))
     if out_of_range:
         raise ValueError(f"layers {out_of_range} out of range")
