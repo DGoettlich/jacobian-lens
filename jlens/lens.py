@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import os
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 import torch
 
 from jlens.hooks import ActivationRecorder
 from jlens.protocol import LensModel
+
+if TYPE_CHECKING:
+    from jlens.interventions import SteerSpec
 
 
 class JacobianLens:
@@ -142,6 +146,77 @@ class JacobianLens:
         J_bar = self.jacobians[layer].to(residual.device)
         return residual @ J_bar.T
 
+    def steer(
+        self,
+        model: LensModel,
+        prompt: str,
+        specs: Sequence[SteerSpec],
+        *,
+        return_position_logits: int | Sequence[int] | None = None,
+        cascading: bool = False,
+        max_seq_len: int = 512,
+    ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
+        """run ``prompt`` with one or more token pushes.
+
+        ``return_position_logits`` selects the positions returned in the logits
+        tensors without changing where ``specs`` apply their edits. by default,
+        logits are returned at the edited positions as before.
+
+        returns the same ``(lens_logits, model_logits, input_ids)`` tuple as
+        :meth:`apply`, computed from the intervened forward pass.
+        """
+        from jlens.interventions import Steer, run_intervention
+
+        return run_intervention(
+            model,
+            self,
+            prompt,
+            Steer(specs, cascading=cascading),
+            max_seq_len,
+            return_position_logits=return_position_logits,
+        )
+
+    def swap(
+        self,
+        model: LensModel,
+        prompt: str,
+        source_token_id: int,
+        target_token_id: int,
+        *,
+        strength: float = 1.0,
+        layers: Sequence[int] | None = None,
+        positions: Sequence[int] | None = None,
+        return_position_logits: int | Sequence[int] | None = None,
+        cascading: bool = False,
+        max_seq_len: int = 512,
+    ) -> tuple[dict[int, torch.Tensor], torch.Tensor, torch.Tensor]:
+        """run ``prompt`` while moving source-token weight onto target.
+
+        ``strength=1`` applies the full source-to-target edit. smaller values
+        make the edit partial; larger values push harder.
+        ``return_position_logits`` selects returned logit positions independently
+        of ``positions``; by default, logits are returned at the edited positions
+        as before. returns the same ``(lens_logits, model_logits, input_ids)``
+        tuple as :meth:`apply`, computed from the intervened forward pass.
+        """
+        from jlens.interventions import Swap, run_intervention
+
+        return run_intervention(
+            model,
+            self,
+            prompt,
+            Swap(
+                source_token_id,
+                target_token_id,
+                strength=strength,
+                layers=layers,
+                positions=positions,
+                cascading=cascading,
+            ),
+            max_seq_len,
+            return_position_logits=return_position_logits,
+        )
+
     @torch.no_grad()
     def apply(
         self,
@@ -200,6 +275,26 @@ class JacobianLens:
             model.forward(input_ids)
             activations = {i: recorder.activations[i].detach() for i in record_at}
 
+        lens_logits, model_logits = self._readout_activations(
+            model,
+            activations,
+            layers,
+            positions,
+            use_jacobian=use_jacobian,
+        )
+        return lens_logits, model_logits, input_ids
+
+    def _readout_activations(
+        self,
+        model: LensModel,
+        activations: dict[int, torch.Tensor],
+        layers: Sequence[int],
+        positions: Sequence[int] | None,
+        *,
+        use_jacobian: bool,
+    ) -> tuple[dict[int, torch.Tensor], torch.Tensor]:
+        final_layer = model.n_layers - 1
+
         def select(layer: int) -> torch.Tensor:
             """Residuals at the requested positions: ``[n_positions, d_model]``."""
             full = activations[layer][0]  # [seq_len, d_model]
@@ -213,4 +308,4 @@ class JacobianLens:
             lens_logits[layer] = model.unembed(residual).float().cpu()
 
         model_logits = model.unembed(select(final_layer)).float().cpu()
-        return lens_logits, model_logits, input_ids
+        return lens_logits, model_logits
