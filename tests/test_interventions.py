@@ -3,6 +3,7 @@
 
 import torch
 
+from jlens import InterventionEditor, Steer
 from jlens.fitting import fit
 from jlens.hooks import ActivationRecorder
 from jlens.interventions import _swap_delta, _token_direction
@@ -130,6 +131,39 @@ def test_steer_changes_logits():
     assert not torch.allclose(intervened_logits, baseline_logits)
 
 
+def test_intervention_editor_supports_caller_managed_forward():
+    model, lens = _model_and_lens()
+    input_ids = model.encode(PROMPT, max_length=64)
+    final_layer = model.n_layers - 1
+
+    with ActivationRecorder(model.layers, at=[final_layer]) as recorder:
+        model.forward(input_ids)
+    baseline_logits = model.unembed(recorder.activations[final_layer][0, -1])
+
+    for cascading in (False, True):
+        intervention = Steer([(7, 0.1, [1], [-1])], cascading=cascading)
+        with (
+            InterventionEditor(model, lens, input_ids, intervention),
+            ActivationRecorder(model.layers, at=[final_layer]) as recorder,
+        ):
+            model.forward(input_ids)
+        caller_logits = model.unembed(recorder.activations[final_layer][0, -1])
+
+        _, steer_logits, _ = lens.steer(
+            model,
+            PROMPT,
+            [(7, 0.1, [1], [-1])],
+            cascading=cascading,
+            max_seq_len=64,
+        )
+        torch.testing.assert_close(caller_logits, steer_logits[0])
+
+        with ActivationRecorder(model.layers, at=[final_layer]) as recorder:
+            model.forward(input_ids)
+        restored_logits = model.unembed(recorder.activations[final_layer][0, -1])
+        torch.testing.assert_close(restored_logits, baseline_logits)
+
+
 def test_multiple_steer_specs_change_logits():
     model, lens = _model_and_lens()
 
@@ -157,7 +191,9 @@ def test_swap_delta_replaces_source_with_target():
 
     expected = torch.tensor([-2.0, 2.0, 0.0])
 
-    torch.testing.assert_close(_swap_delta(residual, source_vector, target_vector), expected)
+    torch.testing.assert_close(
+        _swap_delta(residual, source_vector, target_vector), expected
+    )
 
 
 def test_swap_delta_noops_once_target_is_larger():
