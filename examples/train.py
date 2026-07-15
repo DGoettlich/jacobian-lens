@@ -30,6 +30,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch-size", "-b", type=int, default=8)
     parser.add_argument("--seqs", type=int, default=1000)
     parser.add_argument("--cutoff", type=int, default=1913)
+    parser.add_argument("--skip-upload", action="store_true")
     args = parser.parse_args()
 
     dataset_name = "history-llms/sample-10gb"
@@ -93,13 +94,16 @@ if __name__ == "__main__":
     )
     lens.save(str(artifact))
 
-    api = HfApi()
-    api.create_repo(args.hf_repo_out, repo_type="model", private=True, exist_ok=True)
-    api.upload_file(
-        path_or_fileobj=str(artifact),
-        path_in_repo=hf_filename,
-        repo_id=args.hf_repo_out,
-        repo_type="model",
-    )
+    if not args.skip_upload:
+        api = HfApi()
+        api.create_repo(args.hf_repo_out, repo_type="model", private=True, exist_ok=True)
+        api.upload_file(
+            path_or_fileobj=str(artifact),
+            path_in_repo=hf_filename,
+            repo_id=args.hf_repo_out,
+            repo_type="model",
+        )
 
-    print(f"Saved {artifact} and uploaded it to {args.hf_repo_out}/{hf_filename}")
+    print(f"Saved {artifact}")
+    if not args.skip_upload:
+        print(f"Uploaded it to {args.hf_repo_out}/{hf_filename}")
